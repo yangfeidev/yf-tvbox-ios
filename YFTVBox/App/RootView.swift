@@ -15,10 +15,14 @@ import SwiftUI
 struct RootView: View {
 
     @Environment(AppViewModel.self) private var app
+    @Environment(\.openURL) private var openURL
     @State private var selection = 0
     /// 访问过的 Tab 才真正构建：直播页首次加载要 30~45 秒，
     /// 不能在启动时就把四个页面全建出来。建过之后保活，切回来不重载。
     @State private var visited: Set<Int> = [0]
+    #if DEBUG
+    @State private var debugSession: PlaybackSession?
+    #endif
 
     var body: some View {
         ZStack {
@@ -42,6 +46,44 @@ struct RootView: View {
         }
         .onChange(of: selection) { _, newValue in
             visited.insert(newValue)
+        }
+        #if DEBUG
+        // 调试用：SIMCTL_CHILD_DEBUG_PLAY_URL=<m3u8> 启动后直接进播放页
+        // 只用来验证解码与渲染，Release 构建里不存在
+        .onAppear {
+            guard debugSession == nil,
+                  let url = ProcessInfo.processInfo.environment["DEBUG_PLAY_URL"],
+                  !url.isEmpty else { return }
+            debugSession = PlaybackSession(
+                title: "调试播放",
+                subtitle: url,
+                sources: [PlaySource(name: "调试", episodes: [Episode(name: "调试", url: url)])],
+                sourceIndex: 0,
+                episodeIndex: 0,
+                isLive: false
+            )
+        }
+        .fullScreenCover(item: $debugSession) { session in
+            PlayerScreen(session: session).environment(app)
+        }
+        #endif
+        .alert(
+            Text("发现新版本 \(app.pendingUpdate?.version ?? "")"),
+            isPresented: Binding(
+                get: { app.pendingUpdate != nil },
+                set: { if !$0 { app.dismissUpdate() } }
+            ),
+            presenting: app.pendingUpdate
+        ) { info in
+            Button("稍后", role: .cancel) { app.dismissUpdate() }
+            Button("去下载") {
+                if let url = URL(string: info.url) {
+                    openURL(url)
+                }
+                app.dismissUpdate()
+            }
+        } message: { info in
+            Text(info.changelog ?? "建议更新到最新版本。")
         }
     }
 
@@ -87,6 +129,7 @@ private struct BottomBar: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("tab-\(index)")
             }
         }
         .background(

@@ -42,9 +42,8 @@ struct HomeView: View {
         .task(id: app.currentSite?.key) { await load() }
     }
 
-    private var navigationTitle: String {
-        app.currentSite?.name ?? "飞哥影视仓"
-    }
+    /// 标题固定用应用名：用站点名会让返回按钮变成"烂大街!"这种源站标题
+    private var navigationTitle: String { "飞哥影视仓" }
 
     // MARK: - 主体
 
@@ -74,6 +73,7 @@ struct HomeView: View {
                             }
                         }
                         .padding(.horizontal, XSpacing.lg)
+                        .padding(.trailing, XSpacing.lg)
                     }
                 }
 
@@ -89,20 +89,18 @@ struct HomeView: View {
 
                 ForEach(rails) { rail in
                     VStack(alignment: .leading, spacing: XSpacing.md) {
-                        SectionHeader(
-                            title: rail.category.name,
-                            actionTitle: "更多",
-                            action: nil
-                        )
-                        .padding(.horizontal, XSpacing.lg)
-                        .overlay(alignment: .trailing) {
+                        HStack {
+                            Text(rail.category.name)
+                                .font(XFont.section())
+                                .foregroundStyle(XColors.textPrimary)
+                            Spacer()
                             NavigationLink(value: rail.category) {
                                 Text("更多")
                                     .font(XFont.caption())
                                     .foregroundStyle(XColors.textTertiary)
                             }
-                            .padding(.trailing, XSpacing.lg)
                         }
+                        .padding(.horizontal, XSpacing.lg)
 
                         PosterRail(items: rail.items, cardWidth: cardWidth)
                     }
@@ -122,6 +120,8 @@ struct HomeView: View {
                 }
             }
             .padding(.vertical, XSpacing.md)
+            .frame(maxWidth: form.maxContentWidth)
+            .frame(maxWidth: .infinity)
         }
         .refreshable { await load(force: true) }
     }
@@ -211,8 +211,14 @@ struct HomeView: View {
                         }
                     }
                 } label: {
-                    Image(systemName: "rectangle.stack")
-                        .foregroundStyle(XColors.textPrimary)
+                    HStack(spacing: 4) {
+                        Text(app.currentSite?.name ?? "站点")
+                            .font(XFont.caption())
+                            .lineLimit(1)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                    .foregroundStyle(XColors.textPrimary)
                 }
             }
         }
@@ -235,15 +241,31 @@ struct HomeView: View {
             let picked = Array(allCategories.filter { $0.parentId.isEmpty || $0.parentId == "0" }.prefix(6))
             let targets = picked.isEmpty ? Array(allCategories.prefix(6)) : picked
 
-            let results = try await withThrowingTaskGroup(of: (Int, [MediaItem]).self) { group in
+            // 非 throwing：某个分类挂了只让那一条横轨空着，不能让整页变成错误页
+            let results = await withTaskGroup(of: (Int, [MediaItem]).self) { group in
                 for (index, category) in targets.enumerated() {
                     group.addTask {
-                        let page = try await VodApi.list(site: site, typeId: category.typeId, page: 1)
-                        return (index, page.items)
+                        // 请求失败就直接空着：再打一轮子分类只会把首屏拖得更慢
+                        guard let page = try? await VodApi.list(site: site, typeId: category.typeId, page: 1) else {
+                            return (index, [])
+                        }
+                        if !page.items.isEmpty { return (index, page.items) }
+
+                        // 成功但为空，才可能撞上"父分类没内容、视频挂子分类"，且只给前两条兜底
+                        guard index < 2 else { return (index, []) }
+                        if let children = try? await VodApi.listChildren(
+                            site: site,
+                            parentId: category.typeId,
+                            categories: allCategories,
+                            page: 1
+                        ) {
+                            return (index, children.items)
+                        }
+                        return (index, [])
                     }
                 }
                 var buffer: [Int: [MediaItem]] = [:]
-                for try await (index, items) in group {
+                for await (index, items) in group {
                     buffer[index] = items
                 }
                 return buffer
@@ -312,8 +334,9 @@ private struct FeaturedCard: View {
                 .padding(.vertical, 7)
                 .background(XColors.accent, in: Capsule())
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(XSpacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(XColors.surface, in: RoundedRectangle(cornerRadius: XRadii.lg, style: .continuous))

@@ -4,10 +4,11 @@ import UIKit
 /**
  播放页。
 
- 布局沿用 Android 版的控制层思路：画面全屏铺底，控制层浮在上面，
- 4 秒无操作自动隐藏；点击画面切换显隐。
- 与 Android 的差别只有一处——这里只有 HLS / MP4 能播，
- 遇到 .flv / .mkv / .ts 会明确提示而不是黑屏干等。
+ 布局沿用 Android 版的控制层思路：画面全屏铺底，控制浮层在 4 秒无操作后自动隐藏，
+ 点击画面切换显隐、双击播放/暂停。
+
+ 与 Android 的差别只有一处：这里只有 HLS / MP4 能播，
+ 遇到 .flv / .mkv / .ts 会给出明确提示，并提供「换一条线路」而不是让用户干等。
  */
 struct PlayerScreen: View {
 
@@ -15,7 +16,9 @@ struct PlayerScreen: View {
     @State private var model = PlaybackModel()
     @State private var controlsVisible = true
     @State private var showEpisodes = false
-    @State private var showSpeedMenu = false
+    @State private var scrubbing = false
+    @State private var scrubValue: Double = 0
+    @State private var autoHideTask: Task<Void, Never>?
 
     @Environment(\.dismiss) private var dismiss
     @Environment(AppViewModel.self) private var app
@@ -29,36 +32,54 @@ struct PlayerScreen: View {
             XColors.videoBackground.ignoresSafeArea()
             PlayerSurface(model: model).ignoresSafeArea()
 
-            if case .failed = model.status {
-                failureView
-            }
-
-            if model.status == .buffering {
-                ProgressView().tint(XColors.accent).scaleEffect(1.4)
-            }
-
-            if controlsVisible {
+            if controlsVisible, model.failureMessage == nil {
                 controlLayer.transition(.opacity)
+            }
+
+            // 失败态必须在控制层之上：否则错误文案会被播放/快进按钮压住，根本看不清
+            if let message = model.failureMessage {
+                failureView(message)
+                // 失败时控制层整块隐藏，但返回必须留着——否则播放页成了死胡同
+                VStack {
+                    topBar
+                    Spacer()
+                }
             }
         }
         .contentShape(Rectangle())
+        .onTapGesture(count: 2) {
+            model.togglePlay()
+            revealControls()
+        }
         .onTapGesture {
             withAnimation(.easeInOut(duration: 0.2)) { controlsVisible.toggle() }
-            if controlsVisible { scheduleAutoHide() }
+            if controlsVisible { scheduleAutoHide() } else { autoHideTask?.cancel() }
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .onAppear {
+            // 上一集可能是从列表中直接点进来的，补齐副标题
+            if session.subtitle.isEmpty, let episode = session.currentEpisode {
+                session.subtitle = episode.name
+            }
             model.load(session: session)
             scheduleAutoHide()
         }
         .onDisappear {
+            autoHideTask?.cancel()
             saveProgress()
             model.invalidate()
         }
         .onChange(of: model.status) { _, newValue in
-            if newValue == .ended { saveProgress(finished: true) }
-            scheduleAutoHide()
+            switch newValue {
+            case .ended:
+                saveProgress(finished: true)
+                advanceToNextEpisode()
+            case .playing, .paused:
+                scheduleAutoHide()
+            default:
+                break
+            }
         }
         .sheet(isPresented: $showEpisodes) {
             EpisodePickerSheet(session: session) { sourceIndex, episodeIndex in
@@ -101,6 +122,7 @@ struct PlayerScreen: View {
                     .frame(width: 40, height: 40)
                     .background(XColors.surface.opacity(0.7), in: Circle())
             }
+            .accessibilityIdentifier("player-back")
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(session.title)
@@ -129,11 +151,19 @@ struct PlayerScreen: View {
             }
 
             Button { model.togglePlay() } label: {
-                Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 30, weight: .semibold))
-                    .foregroundStyle(XColors.onAccent)
-                    .frame(width: 64, height: 64)
-                    .background(XColors.accent, in: Circle())
+                ZStack {
+                    Circle().fill(XColors.accent)
+                    if model.status == .buffering {
+                        ProgressView()
+                            .tint(XColors.onAccent)
+                            .scaleEffect(1.1)
+                    } else {
+                        Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 30, weight: .semibold))
+                            .foregroundStyle(XColors.onAccent)
+                    }
+                }
+                .frame(width: 64, height: 64)
             }
 
             Button { model.skip(10) } label: {
@@ -149,17 +179,28 @@ struct PlayerScreen: View {
         VStack(spacing: XSpacing.sm) {
             if !model.isLive {
                 HStack(spacing: XSpacing.md) {
-                    Text(format(model.currentTime))
+                    Text(format(displayTime))
                         .font(XFont.caption())
                         .foregroundStyle(XColors.textSecondary)
                         .monospacedDigit()
 
                     Slider(
                         value: Binding(
-                            get: { model.progress },
-                            set: { model.seek(toProgress: $0) }
+                            get: { scrubbing ? scrubValue : model.progress },
+                            set: { scrubValue = $0 }
                         ),
-                        in: 0...1
+                        in: 0...1,
+                        onEditingChanged: { editing in
+                            if editing {
+                                scrubValue = model.progress
+                                scrubbing = true
+                                autoHideTask?.cancel()
+                            } else {
+                                scrubbing = false
+                                model.seek(toProgress: scrubValue)
+                                scheduleAutoHide()
+                            }
+                        }
                     )
                     .tint(XColors.accent)
 
@@ -216,38 +257,81 @@ struct PlayerScreen: View {
         .padding(.bottom, XSpacing.lg)
     }
 
-    private var failureView: some View {
+    private func failureView(_ message: String) -> some View {
         VStack(spacing: XSpacing.md) {
             Image(systemName: "exclamationmark.triangle")
                 .font(.system(size: 32))
                 .foregroundStyle(XColors.danger)
-            Text(model.failureMessage ?? "播放失败")
+            Text(message)
                 .font(XFont.body())
                 .foregroundStyle(XColors.textPrimary)
                 .multilineTextAlignment(.center)
-            Text("部分 .flv / .mkv / .ts 源在 iOS 上无法解码，换一条线路试试。")
+            Text("部分 .flv / .mkv / .ts 源在 iOS 上无法解码。换一条线路通常能解决。")
                 .font(XFont.caption())
                 .foregroundStyle(XColors.textSecondary)
                 .multilineTextAlignment(.center)
-            Button("重试") { model.load(session: session) }
-                .buttonStyle(.borderedProminent)
-                .tint(XColors.accent)
+
+            HStack(spacing: XSpacing.md) {
+                Button("重试") { model.load(session: session) }
+                    .buttonStyle(.bordered)
+                    .tint(XColors.textSecondary)
+
+                if hasAnotherSource {
+                    Button("换一条线路") { switchToNextSource() }
+                        .buttonStyle(.borderedProminent)
+                        .tint(XColors.accent)
+                }
+            }
+            .padding(.top, XSpacing.sm)
         }
         .padding(XSpacing.xl)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(XColors.videoBackground.opacity(0.92).ignoresSafeArea())
+    }
+
+    // MARK: - 派生
+
+    private var displayTime: Double {
+        scrubbing ? model.duration * scrubValue : model.currentTime
+    }
+
+    private var hasAnotherSource: Bool {
+        session.sources.count > 1
     }
 
     // MARK: - 行为
+
+    private func revealControls() {
+        withAnimation(.easeInOut(duration: 0.2)) { controlsVisible = true }
+        scheduleAutoHide()
+    }
 
     private func switchEpisode(sourceIndex: Int, episodeIndex: Int) {
         saveProgress()
         session.sourceIndex = sourceIndex
         session.episodeIndex = episodeIndex
         session.resumeFraction = 0
-        if let episode = session.currentEpisode {
-            session.subtitle = episode.name
-        }
+        session.subtitle = session.currentEpisode?.name ?? ""
         model.load(session: session)
-        scheduleAutoHide()
+        revealControls()
+    }
+
+    /// 播完自动下一集；已是最后一集就停在结束态
+    private func advanceToNextEpisode() {
+        guard !session.isLive, session.sources.indices.contains(session.sourceIndex) else { return }
+        let episodes = session.sources[session.sourceIndex].episodes
+        guard session.episodeIndex + 1 < episodes.count else {
+            revealControls()
+            return
+        }
+        switchEpisode(sourceIndex: session.sourceIndex, episodeIndex: session.episodeIndex + 1)
+    }
+
+    /// 当前线路播不了时切到下一条线路的第一集
+    private func switchToNextSource() {
+        guard !session.sources.isEmpty else { return }
+        let next = (session.sourceIndex + 1) % session.sources.count
+        switchEpisode(sourceIndex: next, episodeIndex: 0)
     }
 
     private func saveProgress(finished: Bool = false) {
@@ -256,7 +340,6 @@ struct PlayerScreen: View {
               let site = session.librarySite,
               let episode = session.currentEpisode else { return }
 
-        // 直播 / 刚打开都不记；看完标记 100%
         let progress: Float
         if finished {
             progress = 1
@@ -277,8 +360,9 @@ struct PlayerScreen: View {
     }
 
     private func scheduleAutoHide() {
+        autoHideTask?.cancel()
         guard controlsVisible else { return }
-        Task {
+        autoHideTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             guard !Task.isCancelled, model.isPlaying else { return }
             withAnimation(.easeInOut(duration: 0.2)) { controlsVisible = false }
@@ -379,7 +463,10 @@ private struct EpisodePickerSheet: View {
                                     .lineLimit(1)
                                     .frame(maxWidth: .infinity)
                                     .padding(.vertical, 10)
-                                    .background(selected ? XColors.accent : XColors.surfaceRaised, in: RoundedRectangle(cornerRadius: XRadii.sm))
+                                    .background(
+                                        selected ? XColors.accent : XColors.surfaceRaised,
+                                        in: RoundedRectangle(cornerRadius: XRadii.sm)
+                                    )
                             }
                         }
                     }

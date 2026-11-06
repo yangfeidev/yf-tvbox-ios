@@ -77,12 +77,18 @@ enum VodApi {
 
         guard !descendants.isEmpty else { return PagedMedia(page: page) }
 
-        let pages = try await withThrowingTaskGroup(of: PagedMedia.self) { group -> [PagedMedia] in
-            for category in descendants.prefix(12) {
-                group.addTask { try await list(site: site, typeId: category.typeId, page: page) }
+        // 用非 throwing 的 group：子分类里只要有一个接口 404 / 超时，
+        // throwing 版本会取消其余任务并整体抛错，导致整条横轨消失
+        let pages = await withTaskGroup(of: PagedMedia?.self) { group -> [PagedMedia] in
+            for category in descendants.prefix(8) {
+                group.addTask {
+                    try? await list(site: site, typeId: category.typeId, page: page)
+                }
             }
             var results: [PagedMedia] = []
-            for try await result in group { results.append(result) }
+            for await result in group {
+                if let result { results.append(result) }
+            }
             return results
         }
 

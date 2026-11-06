@@ -49,10 +49,43 @@ targets:
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
           NSAllowsArbitraryLoadsInWebContent: true
-        NSLocalNetworkUsageDescription: 用于访问局域网内的视频源与投屏设备
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: me.bsdnme.tvbox
         TARGETED_DEVICE_FAMILY: "1,2"
         ENABLE_PREVIEWS: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         INFOPLIST_KEY_UIUserInterfaceStyle: Dark
+    scheme:
+      testTargets:
+        - YFTVBoxTests
+        - YFTVBoxUITests
+      gatherCoverageData: true
+
+  YFTVBoxUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: YFTVBoxUITests
+    dependencies:
+      - target: YFTVBox
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: me.bsdnme.tvbox.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: YFTVBox
+
+  YFTVBoxTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: YFTVBoxTests
+    dependencies:
+      - target: YFTVBox
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: me.bsdnme.tvbox.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/YFTVBox.app/YFTVBox
+        BUNDLE_LOADER: $(TEST_HOST)

@@ -1,4 +1,5 @@
 import AVFoundation
+import MediaPlayer
 import Observation
 import UIKit
 
@@ -198,7 +199,9 @@ final class PlaybackModel {
     var speed: Float = 1.0
 
     var isPlaying: Bool { status == .playing }
-    var isLive: Bool { duration <= 0 }
+    /// 直播与否由会话决定，不能看 duration：
+    /// 点播刚起播、时长还没解析出来时 duration 也是 0，会被误判成直播（控制层显示成"直播"）
+    var isLive: Bool { sessionIsLive }
     var progress: Double {
         guard duration > 0 else { return 0 }
         return min(max(currentTime / duration, 0), 1)
@@ -210,9 +213,11 @@ final class PlaybackModel {
     }
 
     @ObservationIgnored private var engine: PlayerEngine
-    @ObservationIgnored private var lastURLLoaded: String?
     /// 等拿到真实时长后再按比例跳转，避免对直播（时长无穷）做无意义 seek
     @ObservationIgnored private var pendingFraction: Double?
+    @ObservationIgnored private var nowPlayingActive = false
+    @ObservationIgnored private var sessionIsLive = false
+    @ObservationIgnored private var watchdog: Task<Void, Never>?
 
     init(engine: PlayerEngine? = nil) {
         // 默认参数不能直接写 AVPlayerEngine()：默认值在非隔离上下文求值，
@@ -220,16 +225,22 @@ final class PlaybackModel {
         let resolved = engine ?? AVPlayerEngine()
         self.engine = resolved
         resolved.onStatus = { [weak self] status in
-            self?.status = status
+            guard let self else { return }
+            self.status = status
+            if status != .buffering { self.cancelWatchdog() }
+            self.refreshNowPlayingRate()
         }
         resolved.onProgress = { [weak self] time, duration in
             guard let self else { return }
             self.currentTime = time
             self.duration = duration
+            // 只要有进度就说明已经出画面了，看门狗立即失效
+            if time > 0.5 { self.cancelWatchdog() }
             if let fraction = self.pendingFraction, duration > 1 {
                 self.pendingFraction = nil
                 self.engine.seek(to: duration * fraction)
             }
+            self.refreshNowPlayingTime()
         }
     }
 
@@ -238,39 +249,77 @@ final class PlaybackModel {
             status = .failed("这一集没有可用的播放地址")
             return
         }
-        lastURLLoaded = episode.url
+        // 编码格式先过一遍，别让用户对着转圈等 15 秒
+        if let reason = PlaybackFormat.unsupportedReason(for: episode.url) {
+            status = .failed(reason)
+            return
+        }
+
+        sessionIsLive = session.isLive
         currentTime = 0
         duration = 0
         status = .buffering
         pendingFraction = (session.resumeFraction > 0.02 && session.resumeFraction < 0.98)
             ? session.resumeFraction
             : nil
+
+        activateAudioSession()
+        updateNowPlaying(session: session)
+
+        engine.setRate(speed)
         engine.load(url: episode.url, headers: session.headers, startAt: 0)
         engine.play()
+        startBufferingWatchdog()
+    }
+
+    /**
+     起播看门狗。
+     AVPlayer 对失效源经常既不报错也不出画面，一直停在 buffering；
+     设个上限，30 秒还没有任何进展就当作失败，把「换一条线路」的按钮亮出来。
+     */
+    private func startBufferingWatchdog() {
+        watchdog?.cancel()
+        watchdog = Task { @MainActor in
+            // 30 秒：慢速 CDN 首帧经常要 15~20 秒，20 秒会误杀
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            guard !Task.isCancelled else { return }
+            if case .buffering = self.status {
+                self.status = .failed("加载超时：30 秒没有画面。这个源可能已失效，换一条线路试试")
+            }
+        }
+    }
+
+    private func cancelWatchdog() {
+        watchdog?.cancel()
+        watchdog = nil
     }
 
     func togglePlay() {
         if isPlaying { engine.pause() } else { engine.play() }
     }
 
-    func pauseIfPlaying() {
-        if isPlaying { engine.pause() }
-    }
+    func play() { engine.play() }
+
+    func pause() { engine.pause() }
 
     func skip(_ delta: Double) {
         let target = currentTime + delta
-        engine.seek(to: max(0, duration > 0 ? min(target, duration - 1) : target))
-        currentTime = max(0, target)
+        let clamped = max(0, duration > 0 ? min(target, duration - 1) : target)
+        engine.seek(to: clamped)
+        currentTime = clamped
     }
 
     func seek(toProgress value: Double) {
         guard duration > 0 else { return }
-        engine.seek(to: duration * value)
+        let target = duration * min(max(value, 0), 1)
+        engine.seek(to: target)
+        currentTime = target
     }
 
     func setSpeed(_ value: Float) {
         speed = value
         engine.setRate(value)
+        refreshNowPlayingRate()
     }
 
     func toggleAspect() {
@@ -280,5 +329,101 @@ final class PlaybackModel {
 
     func makeSurface() -> UIView { engine.makeSurface() }
 
-    func invalidate() { engine.invalidate() }
+    func invalidate() {
+        cancelWatchdog()
+        engine.invalidate()
+        deactivateNowPlaying()
+    }
+
+    // MARK: - 音频会话与锁屏信息
+
+    /**
+     视频 App 用 .playback：静音开关拨下也有声音，这是用户预期。
+     不申请后台播放（Info.plist 未开 audio），退到后台会自动暂停。
+     */
+    private func activateAudioSession() {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .moviePlayback, options: [])
+        try? session.setActive(true)
+    }
+
+    private func updateNowPlaying(session: PlaybackSession) {
+        let center = MPNowPlayingInfoCenter.default()
+        guard !session.isLive else {
+            center.nowPlayingInfo = nil
+            nowPlayingActive = false
+            return
+        }
+        var info: [String: Any] = [:]
+        info[MPMediaItemPropertyTitle] = session.title
+        if !session.subtitle.isEmpty {
+            info[MPMediaItemPropertyArtist] = session.subtitle
+        }
+        if duration > 0 {
+            info[MPMediaItemPropertyPlaybackDuration] = duration
+            info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
+        }
+        info[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
+        center.nowPlayingInfo = info
+        nowPlayingActive = true
+        registerRemoteCommands()
+    }
+
+    private func refreshNowPlayingTime() {
+        guard nowPlayingActive, var info = MPNowPlayingInfoCenter.default().nowPlayingInfo else { return }
+        if duration > 0 { info[MPMediaItemPropertyPlaybackDuration] = duration }
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    private func refreshNowPlayingRate() {
+        guard nowPlayingActive, var info = MPNowPlayingInfoCenter.default().nowPlayingInfo else { return }
+        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? Double(speed) : 0
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    private func registerRemoteCommands() {
+        let center = MPRemoteCommandCenter.shared()
+        center.playCommand.removeTarget(nil)
+        center.pauseCommand.removeTarget(nil)
+        center.togglePlayPauseCommand.removeTarget(nil)
+        center.skipForwardCommand.removeTarget(nil)
+        center.skipBackwardCommand.removeTarget(nil)
+        center.skipForwardCommand.preferredIntervals = [10]
+        center.skipBackwardCommand.preferredIntervals = [10]
+
+        center.playCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.play() }
+            return .success
+        }
+        center.pauseCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.pause() }
+            return .success
+        }
+        center.togglePlayPauseCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.togglePlay() }
+            return .success
+        }
+        center.skipForwardCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.skip(10) }
+            return .success
+        }
+        center.skipBackwardCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.skip(-10) }
+            return .success
+        }
+    }
+
+    private func deactivateNowPlaying() {
+        guard nowPlayingActive else { return }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        nowPlayingActive = false
+        let center = MPRemoteCommandCenter.shared()
+        center.playCommand.removeTarget(nil)
+        center.pauseCommand.removeTarget(nil)
+        center.togglePlayPauseCommand.removeTarget(nil)
+        center.skipForwardCommand.removeTarget(nil)
+        center.skipBackwardCommand.removeTarget(nil)
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
 }

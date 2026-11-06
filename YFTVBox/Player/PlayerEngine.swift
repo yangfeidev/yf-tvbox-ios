@@ -36,8 +36,7 @@ protocol PlayerEngine: AnyObject {
 }
 
 /// 一次播放会话：点播的某一集，或一个直播频道。
-struct PlaybackSession: Identifiable {
-    var id = UUID()
+struct PlaybackSession: Identifiable {    var id = UUID()
     var title: String
     var subtitle: String = ""
     var sources: [PlaySource]
@@ -61,5 +60,33 @@ struct PlaybackSession: Identifiable {
 
     var currentSourceName: String {
         sources.indices.contains(sourceIndex) ? sources[sourceIndex].name : ""
+    }
+}
+
+/**
+ 格式预检。
+
+ AVPlayer 遇到 .flv / .mkv 这类容器不会立刻报错，而是先拉流、再超时，
+ 用户看到的是长时间转圈。这里提前判断并直接给结论，比等 15 秒友好。
+ `.ts` 不拦：少数源的 ts 直链能被系统解出来，交给 AVPlayer 自己试。
+ */
+enum PlaybackFormat {
+    private static let unsupported: [(ext: String, label: String)] = [
+        (".flv", "FLV"),
+        (".mkv", "MKV"),
+        (".avi", "AVI"),
+        (".wmv", "WMV"),
+        (".rmvb", "RMVB"),
+        (".rm", "RM"),
+        (".f4v", "F4V"),
+        (".mpd", "DASH/MPD"),
+    ]
+
+    static func unsupportedReason(for url: String) -> String? {
+        let lower = url.lowercased()
+        for item in unsupported where lower.contains(item.ext) {
+            return "这是一条 \(item.label) 直链，iOS 系统解码器不支持这种封装格式"
+        }
+        return nil
     }
 }

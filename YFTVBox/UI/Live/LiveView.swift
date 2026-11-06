@@ -111,6 +111,7 @@ struct LiveView: View {
                         ChannelCell(channel: channel)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityIdentifier("channel-\(channel.id)")
                 }
             }
             .padding(.horizontal, form.horizontalPadding)
@@ -153,7 +154,7 @@ private struct ChannelCell: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            RemoteImage(url: channel.logo)
+            RemoteImage(url: channel.logo, fit: true)
                 .aspectRatio(16.0 / 10.0, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: XRadii.sm, style: .continuous))
                 .overlay(

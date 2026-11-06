@@ -35,6 +35,11 @@ final class AppViewModel {
     var pinnedSites: Set<String> = []
     var searchHistory: [String] = []
 
+    /// 检查更新：有新版时由根视图统一弹窗，手动检查的结果用 updateMessage 提示
+    var pendingUpdate: UpdateInfo?
+    var checkingUpdate = false
+    var updateMessage: String?
+
     var usableSites: [Site] { document?.usableSites ?? [] }
     var hasSubscription: Bool { !subscriptions.isEmpty }
     /// 因缺少运行时被跳过的源数量（spider 类），设置页展示
@@ -86,6 +91,40 @@ final class AppViewModel {
         } else {
             initializing = false
         }
+
+        if settings.autoCheckUpdate {
+            Task { await checkUpdate() }
+        }
+    }
+
+    // MARK: - 检查更新
+
+    /**
+     iOS 不能自更新，这里只负责"发现新版并引导下载"。
+     启动时的检查是静默的：没更新、失败都不打扰；手动检查才回显结果。
+     */
+    func checkUpdate(manual: Bool = false) async {
+        guard !checkingUpdate else { return }
+        checkingUpdate = true
+        if manual { updateMessage = nil }
+        defer { checkingUpdate = false }
+
+        do {
+            if let info = try await UpdateApi.check() {
+                pendingUpdate = info
+            } else if manual {
+                updateMessage = "已是最新版本 \(UpdateApi.currentVersion)（build \(UpdateApi.currentBuild)）"
+            }
+        } catch {
+            guard !Http.isCancellation(error) else { return }
+            if manual {
+                updateMessage = (error as? SourceError)?.message ?? error.localizedDescription
+            }
+        }
+    }
+
+    func dismissUpdate() {
+        pendingUpdate = nil
     }
 
     // MARK: - 订阅
@@ -387,6 +426,11 @@ final class AppViewModel {
 
     func setAutoUpdate(_ value: Bool) {
         settings.autoUpdateOnLaunch = value
+        store.saveSettings(settings)
+    }
+
+    func setAutoCheckUpdate(_ value: Bool) {
+        settings.autoCheckUpdate = value
         store.saveSettings(settings)
     }
 

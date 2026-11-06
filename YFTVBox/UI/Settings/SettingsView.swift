@@ -26,6 +26,7 @@ struct SettingsView: View {
                 } label: {
                     LabeledRow(icon: "arrow.down.circle", title: "订阅管理", detail: "\(app.subscriptions.count) 个")
                 }
+                .accessibilityIdentifier("settings-subscriptions")
 
                 if let site = app.currentSite {
                     NavigationLink {
@@ -40,11 +41,30 @@ struct SettingsView: View {
                 } label: {
                     LabeledRow(
                         icon: "arrow.clockwise",
-                        title: app.loading ? "刷新中…" : "刷新订阅",
-                        detail: app.skippedSiteCount > 0 ? "\(app.skippedSiteCount) 个源不可用" : ""
+                        title: app.loading ? "刷新中…" : "刷新订阅"
                     )
                 }
                 .disabled(app.loading || app.subscriptions.isEmpty)
+
+                if app.skippedSiteCount > 0 {
+                    NavigationLink {
+                        SiteListView()
+                    } label: {
+                        HStack(spacing: XSpacing.md) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.system(size: 14))
+                                .foregroundStyle(XColors.info)
+                                .frame(width: 22)
+                            Text("\(app.skippedSiteCount) 个源在 iOS 上不可用")
+                                .font(XFont.bodySmall())
+                                .foregroundStyle(XColors.textSecondary)
+                            Spacer(minLength: XSpacing.sm)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 11))
+                                .foregroundStyle(XColors.textTertiary)
+                        }
+                    }
+                }
             } header: {
                 Text("内容源")
             }
@@ -71,6 +91,7 @@ struct SettingsView: View {
                 } label: {
                     LabeledRow(icon: "tv", title: "直播源", detail: liveHost)
                 }
+                .accessibilityIdentifier("settings-live")
             } header: {
                 Text("直播")
             }
@@ -82,6 +103,16 @@ struct SettingsView: View {
                     set: { app.setAutoUpdate($0) }
                 )) {
                     Text("启动时刷新订阅")
+                        .font(XFont.body())
+                        .foregroundStyle(XColors.textPrimary)
+                }
+                .tint(XColors.accent)
+
+                Toggle(isOn: Binding(
+                    get: { app.settings.autoCheckUpdate },
+                    set: { app.setAutoCheckUpdate($0) }
+                )) {
+                    Text("启动时检查更新")
                         .font(XFont.body())
                         .foregroundStyle(XColors.textPrimary)
                 }
@@ -123,6 +154,27 @@ struct SettingsView: View {
                         .font(XFont.bodySmall())
                         .foregroundStyle(XColors.textTertiary)
                         .monospacedDigit()
+                }
+
+                Button {
+                    Task { await app.checkUpdate(manual: true) }
+                } label: {
+                    HStack {
+                        Text("检查更新")
+                            .font(XFont.body())
+                            .foregroundStyle(XColors.accent)
+                        Spacer()
+                        if app.checkingUpdate {
+                            ProgressView().tint(XColors.accent)
+                        }
+                    }
+                }
+                .disabled(app.checkingUpdate)
+
+                if let message = app.updateMessage {
+                    Text(message)
+                        .font(XFont.caption())
+                        .foregroundStyle(XColors.textTertiary)
                 }
 
                 VStack(alignment: .leading, spacing: 6) {

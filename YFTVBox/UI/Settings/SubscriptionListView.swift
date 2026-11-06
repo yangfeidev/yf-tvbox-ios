@@ -53,6 +53,16 @@ struct SubscriptionListView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .safeAreaInset(edge: .bottom) {
+            if !app.subscriptions.isEmpty {
+                Text("点按切换当前订阅，左滑删除。切换后会先用本地缓存顶起界面，再后台刷新。")
+                    .font(XFont.caption())
+                    .foregroundStyle(XColors.textTertiary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, XSpacing.lg)
+                    .padding(.bottom, XSpacing.sm)
+            }
+        }
         .scrollContentBackground(.hidden)
         .background(XColors.background)
         .navigationTitle("订阅管理")

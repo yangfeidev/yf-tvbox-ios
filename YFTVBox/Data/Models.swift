@@ -230,11 +230,12 @@ struct ResumeTarget {
  上次看到哪一集。
 
  优先按历史里记录过的线路名定位，找不到再跨线路按集名找。
- 进度 <2% 或 >98% 视为不需要续播（刚点开 / 已经看完）。
+ 进度 <2% 或 >98% 视为不需要续播（刚点开 / 已经看完）——
+ 阈值与播放页的应用条件保持一致，否则会出现"续播按钮在，但播放器不跳"。
  */
 func findResumeTarget(sources: [PlaySource], history: LibraryEntry?) -> ResumeTarget? {
     guard let history, !history.episodeName.isEmpty,
-          history.progress > 0, history.progress < 0.98 else { return nil }
+          history.progress > 0.02, history.progress < 0.98 else { return nil }
 
     if !history.sourceName.isEmpty,
        let sourceIndex = sources.firstIndex(where: { $0.name == history.sourceName }),
@@ -252,10 +253,27 @@ func findResumeTarget(sources: [PlaySource], history: LibraryEntry?) -> ResumeTa
 
 struct AppSettings: Codable {
     var autoUpdateOnLaunch: Bool = true
+    var autoCheckUpdate: Bool = true
     var activeSubscriptionId: String = ""
     var currentSiteKey: String = ""
     /// 自定义直播源（m3u / txt）。为空时使用订阅里自带的 lives
     var liveUrl: String = ""
     /// 首次启动自动导入内置单仓订阅
     var autoAddDefault: Bool = true
+
+    init() {}
+
+    /**
+     手写解码：这几个键都是"后加的"，
+     合成解码遇到缺字段会整条失败（用户升级后会丢全部设置），所以逐项带了默认值。
+     */
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        autoUpdateOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .autoUpdateOnLaunch) ?? true
+        autoCheckUpdate = try container.decodeIfPresent(Bool.self, forKey: .autoCheckUpdate) ?? true
+        activeSubscriptionId = try container.decodeIfPresent(String.self, forKey: .activeSubscriptionId) ?? ""
+        currentSiteKey = try container.decodeIfPresent(String.self, forKey: .currentSiteKey) ?? ""
+        liveUrl = try container.decodeIfPresent(String.self, forKey: .liveUrl) ?? ""
+        autoAddDefault = try container.decodeIfPresent(Bool.self, forKey: .autoAddDefault) ?? true
+    }
 }

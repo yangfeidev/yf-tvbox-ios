@@ -21,6 +21,8 @@ struct DetailView: View {
     @State private var descExpanded = false
 
     private var site: Site? { app.currentSite }
+    private var posterWidth: CGFloat { form.isTablet ? 168 : 108 }
+    private var episodeColumns: Int { form.isTablet ? 8 : 4 }
     private var sources: [PlaySource] { detail?.usableSources ?? [] }
     private var resume: ResumeTarget? {
         guard let site else { return nil }
@@ -61,6 +63,9 @@ struct DetailView: View {
             }
             .padding(.horizontal, form.horizontalPadding)
             .padding(.bottom, XSpacing.xxl)
+            // 平板上不限宽的话正文会拉到 720pt，一行几十个字根本没法读
+            .frame(maxWidth: form.isTablet ? 760 : .infinity)
+            .frame(maxWidth: .infinity)
         }
         .background(XColors.background)
         .navigationTitle(detail?.item.name ?? item.name)
@@ -78,7 +83,7 @@ struct DetailView: View {
     private var header: some View {
         HStack(alignment: .top, spacing: XSpacing.lg) {
             RemoteImage(url: detail?.item.poster ?? item.poster)
-                .frame(width: 108, height: 162)
+                .frame(width: posterWidth, height: posterWidth * 1.5)
                 .clipShape(RoundedRectangle(cornerRadius: XRadii.md, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: XRadii.md, style: .continuous)
@@ -138,6 +143,7 @@ struct DetailView: View {
             }
             .buttonStyle(.plain)
             .disabled(sources.isEmpty)
+            .accessibilityIdentifier("detail-play")
 
             Button {
                 if let site { app.toggleFavorite(detail?.item ?? item, site: site) }
@@ -149,6 +155,7 @@ struct DetailView: View {
                     .background(XColors.surfaceRaised, in: Circle())
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("detail-favorite")
         }
     }
 
@@ -173,11 +180,15 @@ struct DetailView: View {
                 .foregroundStyle(XColors.textSecondary)
                 .lineLimit(descExpanded ? nil : 4)
                 .fixedSize(horizontal: false, vertical: true)
-            Button(descExpanded ? "收起" : "展开") {
-                withAnimation { descExpanded.toggle() }
+
+            // 短简介撑不到 4 行，给个"展开"按钮反而像没做完
+            if content.count > 60 {
+                Button(descExpanded ? "收起" : "展开") {
+                    withAnimation { descExpanded.toggle() }
+                }
+                .font(XFont.caption())
+                .foregroundStyle(XColors.accent)
             }
-            .font(XFont.caption())
-            .foregroundStyle(XColors.accent)
         }
     }
 
@@ -207,8 +218,9 @@ struct DetailView: View {
                 .font(XFont.section())
                 .foregroundStyle(XColors.textPrimary)
 
+            // 固定 4 列：自适应列在只有 1 集时会把按钮拉成一条很宽的长条
             LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 76), spacing: XSpacing.sm)],
+                columns: Array(repeating: GridItem(.flexible(), spacing: XSpacing.sm), count: episodeColumns),
                 spacing: XSpacing.sm
             ) {
                 ForEach(Array(currentEpisodes.enumerated()), id: \.offset) { index, episode in

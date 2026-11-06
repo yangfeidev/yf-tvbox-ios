@@ -29,6 +29,9 @@ final class ImageCache {
         cache.object(forKey: url as NSString)
     }
 
+    private var inFlight: [String: [(UIImage?) -> Void]] = [:]
+    private let lock = NSLock()
+
     func load(_ url: String, completion: @escaping (UIImage?) -> Void) {
         if let hit = cached(url) {
             completion(hit)
@@ -38,6 +41,16 @@ final class ImageCache {
             completion(nil)
             return
         }
+
+        // 同一张图在多个格子里同时出现时只发一次请求，回调排队
+        lock.lock()
+        if inFlight[url] != nil {
+            inFlight[url]?.append(completion)
+            lock.unlock()
+            return
+        }
+        inFlight[url] = [completion]
+        lock.unlock()
         var request = URLRequest(url: requestURL)
         request.setValue(Http.defaultUA, forHTTPHeaderField: "User-Agent")
         if let referer = URL(string: url)?.scheme {
@@ -45,39 +58,50 @@ final class ImageCache {
             _ = referer
         }
         session.dataTask(with: request) { [weak self] data, _, _ in
-            guard let data, let image = UIImage(data: data) else {
-                DispatchQueue.main.async { completion(nil) }
-                return
+            guard let self else { return }
+            let image = data.flatMap { UIImage(data: $0) }
+            if let image {
+                self.cache.setObject(image, forKey: url as NSString)
             }
-            self?.cache.setObject(image, forKey: url as NSString)
-            DispatchQueue.main.async { completion(image) }
+            self.lock.lock()
+            let waiters = self.inFlight.removeValue(forKey: url) ?? []
+            self.lock.unlock()
+            DispatchQueue.main.async {
+                waiters.forEach { $0(image) }
+            }
         }.resume()
     }
 }
 
 struct RemoteImage: View {
     let url: String
+    /// 海报要填满（裁边可接受），台标要完整（裁一点就看不出是哪个台）
+    var fit = false
 
     @State private var image: UIImage?
     @State private var failed = false
 
     var body: some View {
-        ZStack {
-            XColors.posterPlaceholder
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-            } else if failed {
-                Image(systemName: "photo")
-                    .font(.system(size: 20))
-                    .foregroundStyle(XColors.textTertiary)
-            } else {
-                ProgressView().tint(XColors.textTertiary)
+        // 用 Rectangle 当底而不是 ZStack：ZStack 的尺寸会被子视图的"固有尺寸"撑大，
+        // 图片不固定宽高时（比如直播台标那种整行布局）会把整个 cell 撑爆。
+        // Rectangle 是可伸缩的，overlay 只会被提议同样大小，最后 clipped 收边。
+        Rectangle()
+            .fill(XColors.posterPlaceholder)
+            .overlay {
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: fit ? .fit : .fill)
+                } else if failed {
+                    Image(systemName: "photo")
+                        .font(.system(size: 18))
+                        .foregroundStyle(XColors.textTertiary)
+                } else {
+                    ProgressView().tint(XColors.textTertiary)
+                }
             }
-        }
-        .clipped()
-        .task(id: url) {
+            .clipped()
+            .task(id: url) {
             failed = false
             image = ImageCache.shared.cached(url)
             guard image == nil else { return }
@@ -123,6 +147,8 @@ struct PosterCard: View {
         }
         .frame(width: width, alignment: .leading)
         .contentShape(Rectangle())
+        .accessibilityIdentifier("poster-\(item.id)")
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -152,6 +178,8 @@ struct PosterGridCell: View {
                 .opacity(item.remarks.isEmpty ? 0 : 1)
         }
         .contentShape(Rectangle())
+        .accessibilityIdentifier("poster-\(item.id)")
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -240,8 +268,6 @@ struct ErrorBanner: View {
 
 struct SectionHeader: View {
     let title: String
-    var actionTitle: String?
-    var action: (() -> Void)?
 
     var body: some View {
         HStack {
@@ -249,11 +275,6 @@ struct SectionHeader: View {
                 .font(XFont.section())
                 .foregroundStyle(XColors.textPrimary)
             Spacer()
-            if let actionTitle, let action {
-                Button(actionTitle, action: action)
-                    .font(XFont.caption())
-                    .foregroundStyle(XColors.textTertiary)
-            }
         }
     }
 }

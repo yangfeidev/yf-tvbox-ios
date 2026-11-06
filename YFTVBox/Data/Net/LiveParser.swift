@@ -61,10 +61,11 @@ enum LiveParser {
                 let info = parseExtInf(line)
                 pending = info
                 headers = info.headers
-            } else if line.uppercased().hasPrefix("#EXTVLCOPT:http-") {
+            } else if line.lowercased().hasPrefix("#extvlcopt:http-") {
                 // 与 Android 版一致：取第一个冒号之后、再去掉开头的 "http-"
+                // 注意用 lowercased 判断前缀：uppercased 会把 "http-" 变成 "HTTP-"，直接比会永远不命中
                 var option = String(line.drop(while: { $0 != ":" }).dropFirst())
-                if option.hasPrefix("http-") { option.removeFirst("http-".count) }
+                if option.lowercased().hasPrefix("http-") { option.removeFirst("http-".count) }
                 let key = option.components(separatedBy: "=").first?.lowercased() ?? ""
                 let value = option.components(separatedBy: "=").dropFirst().joined(separator: "=")
                     .trimmingCharacters(in: .whitespaces)
