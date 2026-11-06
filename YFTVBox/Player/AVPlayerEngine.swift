@@ -249,13 +249,16 @@ final class PlaybackModel {
             status = .failed("这一集没有可用的播放地址")
             return
         }
+
+        // 直播标记要在格式预检之前落位：否则直播包是 mkv 时会被当成点播，显示出 00:00 的进度条
+        sessionIsLive = session.isLive
+
         // 编码格式先过一遍，别让用户对着转圈等 15 秒
         if let reason = PlaybackFormat.unsupportedReason(for: episode.url) {
             status = .failed(reason)
             return
         }
 
-        sessionIsLive = session.isLive
         currentTime = 0
         duration = 0
         status = .buffering

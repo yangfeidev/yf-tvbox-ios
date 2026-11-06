@@ -123,6 +123,25 @@ AVPlayer 只吃 HLS（m3u8）与 mp4 / mov。源站里大量 `.flv` / `.mkv` / `
 python3 ../yf-tvbox/scripts/probe_formats.py <订阅地址>
 ```
 
+### 检查更新的清单
+
+iOS 用独立清单（Android 的 `apkUrl` 在这里没意义），托管在 R2 的 `feige-yingshicang-ios/` 目录：
+
+```json
+{
+  "build": 2,
+  "version": "1.0.1",
+  "minBuild": 1,
+  "url": "https://dl.bsdnme.me/feige-yingshicang-ios/YFTVBox-1.0.1.ipa",
+  "changelog": "修复xxx；新增xxx",
+  "force": false
+}
+```
+
+- 比较依据：`build` 与 Bundle 的 `CFBundleVersion`
+- 清单不存在（404）视为"没有更新"，不报错
+- 发现新版只弹窗展示 changelog + 「去下载」，装包动作由 Sideloadly / Xcode / Apple Configurator 完成
+
 ## 测试
 
 - `YFTVBoxTests`（24 个用例）：VodParser 的 JSON/XML、三层分隔符、脏数据降级；LiveParser 的 m3u/txt、组播与 IPv6 过滤、伪频道过滤；SubscriptionApi 的三种形态与异常；格式预检；续播定位
