@@ -22,34 +22,34 @@ TVBox 类壳应用的 iOS 版，SwiftUI 重写。**iPhone / iPad 双端，不含
 
 | Android（Compose） | iOS（SwiftUI） | 说明 |
 |---|---|---|
-| `data/model/Models.kt` | `Data/Models.swift` | 结构一一对应 |
-| `data/net/Http.kt` | `Data/Net/Http.swift` | URLSession；额外处理 GBK / GB18030 编码 |
-| `data/net/VodParser.kt` | `Data/Net/VodParser.swift` | JSON 走 JSONSerialization，XML 走 XMLParser |
-| `data/net/VodApi.kt` | `Data/Net/VodApi.swift` | 分类 / 列表 / 搜索 / 详情 / 子分类合并 |
-| `data/net/SubscriptionApi.kt` | `Data/Net/SubscriptionApi.swift` | 三种订阅形态 |
-| `data/net/LiveParser.kt` | `Data/Net/LiveParser.swift` | m3u + txt，同样的过滤规则 |
-| `data/LocalStore.kt` | `Data/LocalStore.swift` | UserDefaults + Application Support |
-| `vm/AppViewModel.kt` | `VM/AppViewModel.swift` | `@Observable` + `@MainActor` |
-| `ui/player`（ExoPlayer） | `Player/`（AVPlayer） | 抽了 `PlayerEngine` 协议 |
-| `ui/update` | `Data/Net/UpdateApi.swift` | iOS 改为"查版本 → 打开下载页" |
+| `data/model/Models.kt` | `Data/Models/Models.swift` | 结构一一对应 |
+| `data/net/Http.kt` | `Data/Networking/Http.swift` | URLSession；额外处理 GBK / GB18030 编码 |
+| `data/net/VodParser.kt` | `Data/Parsers/VodParser.swift` | JSON 走 JSONSerialization，XML 走 XMLParser |
+| `data/net/VodApi.kt` | `Data/Services/VodApi.swift` | 分类 / 列表 / 搜索 / 详情 / 子分类合并 |
+| `data/net/SubscriptionApi.kt` | `Data/Services/SubscriptionApi.swift` | 三种订阅形态 |
+| `data/net/LiveParser.kt` | `Data/Parsers/LiveParser.swift` | m3u + txt，同样的过滤规则 |
+| `data/LocalStore.kt` | `Data/Persistence/LocalStore.swift` | UserDefaults + Application Support |
+| `vm/AppViewModel.kt` | `App/AppViewModel.swift` | `@Observable` + `@MainActor` |
+| `ui/player`（ExoPlayer） | `Features/Player/`（AVPlayer） | 抽了 `PlayerEngine` 协议 |
+| `ui/update` | `Data/Services/UpdateApi.swift` | iOS 改为"查版本 → 打开下载页" |
 | `cast/Dlna.kt` | — | iOS 版不做投屏 |
 
 ## 工程结构
 
 ```
 YFTVBox/
-├── App/                入口、根视图（手机底栏 / 平板侧栏，首次访问才构建、之后保活）
-├── Core/               设计令牌、形态判定、默认源地址
+├── App/                应用入口、根视图和全局状态
+├── Features/           按功能划分的页面：Home / Category / Detail / Search /
+│                       Library / Live / Settings / Player（含播放引擎）
 ├── Data/
-│   ├── Models.swift
-│   ├── LocalStore.swift
-│   └── Net/            Http / VodParser / VodApi / LiveParser / LiveCache / SubscriptionApi / UpdateApi
-├── Player/
-│   ├── PlayerEngine.swift   播放内核协议 + 会话 + 格式预检
-│   ├── AVPlayerEngine.swift AVPlayer 实现 + 可观测包装 + 看门狗
-│   └── PlayerScreen.swift   播放页
-├── VM/AppViewModel.swift
-├── UI/                 Home / Category / Detail / Search / Library / Live / Settings / Components
+│   ├── Models/         数据模型
+│   ├── Networking/     HTTP 请求
+│   ├── Services/       点播、订阅与更新接口
+│   ├── Parsers/        点播与直播数据解析
+│   └── Persistence/    本地存储与直播缓存
+├── Shared/
+│   ├── Components/     共用界面组件
+│   └── Core/           主题、设备形态与默认源配置
 └── Resources/          Assets.xcassets（App 图标 + 强调色）
 YFTVBoxTests/           解析层单元测试
 YFTVBoxUITests/         逐页走查（截图挂进测试报告）
