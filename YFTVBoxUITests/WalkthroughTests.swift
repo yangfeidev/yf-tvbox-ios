@@ -21,6 +21,21 @@ final class WalkthroughTests: XCTestCase {
         app.launch()
     }
 
+    func testPlayerOrientationButton() throws {
+        app.terminate()
+        app.launchEnvironment["DEBUG_PLAY_URL"] = "http://127.0.0.1:9999/video.m3u8"
+        app.launch()
+        let orientation = app.buttons["player-orientation"]
+        XCTAssertTrue(orientation.waitForExistence(timeout: 10))
+        orientation.tap()
+        XCTAssertTrue(app.buttons["player-orientation"].label.contains("竖屏"))
+        app.buttons["player-back"].tap()
+        XCTAssertTrue(app.buttons["player-orientation"].label.contains("横屏"))
+        XCTAssertTrue(app.buttons["player-back"].exists)
+        app.buttons["player-back"].tap()
+        XCTAssertFalse(app.buttons["player-back"].waitForExistence(timeout: 3))
+    }
+
     func testWalkthrough() throws {
         // 1. 首页：等订阅 + 分类 + 6 个列表都拉完
         let firstPoster = element(prefix: "poster-")

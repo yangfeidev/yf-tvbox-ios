@@ -65,6 +65,24 @@ struct PlaybackSession: Identifiable {    var id = UUID()
     }
 }
 
+/// 跨线路优先按集名匹配，再按集数位置匹配；没有对应集时不跳到其他内容。
+func matchingEpisodeIndex(name: String, index: Int, in source: PlaySource) -> Int? {
+    if let match = source.episodes.firstIndex(where: { $0.name == name }) { return match }
+    return source.episodes.indices.contains(index) ? index : nil
+}
+
+func nextPlaybackSource(sources: [PlaySource], current: Int, episodeName: String,
+                        episodeIndex: Int, attempted: Set<Int>) -> (source: Int, episode: Int)? {
+    guard sources.count > 1 else { return nil }
+    for offset in 1..<sources.count {
+        let index = (current + offset) % sources.count
+        guard !attempted.contains(index),
+              let episode = matchingEpisodeIndex(name: episodeName, index: episodeIndex, in: sources[index]) else { continue }
+        return (index, episode)
+    }
+    return nil
+}
+
 /**
  格式预检。
 

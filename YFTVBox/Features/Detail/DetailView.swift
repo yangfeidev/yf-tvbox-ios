@@ -274,6 +274,9 @@ struct DetailView: View {
                 history: app.historyEntry(siteKey: site.key, mediaId: item.id)
             ) {
                 sourceIndex = resume.sourceIndex
+            } else {
+                // 默认使用“换一条线路”切换到的下一条；只有一条时仍用第一条。
+                sourceIndex = result.usableSources.count > 1 ? 1 : 0
             }
             if autoResume { playPrimary() }
         } catch {
@@ -287,9 +290,17 @@ struct DetailView: View {
 
     private func playPrimary() {
         if let resume {
+            guard sources.indices.contains(sourceIndex),
+                  let episode = matchingEpisodeIndex(
+                    name: sources[resume.sourceIndex].episodes[resume.episodeIndex].name,
+                    index: resume.episodeIndex, in: sources[sourceIndex]
+                  ) else {
+                start(sourceIndex: sourceIndex, episodeIndex: 0)
+                return
+            }
             start(
-                sourceIndex: resume.sourceIndex,
-                episodeIndex: resume.episodeIndex,
+                sourceIndex: sourceIndex,
+                episodeIndex: episode,
                 resumeFraction: Double(resume.progress)
             )
         } else {

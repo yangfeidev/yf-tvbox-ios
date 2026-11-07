@@ -254,6 +254,22 @@ private final class TestPlayerEngine: PlayerEngine {
 }
 
 final class PlaybackRegressionTests: XCTestCase {
+    func testSwitchSourceMatchesEpisodeAndStopsAfterEachSource() {
+        let sources = [
+            PlaySource(name: "一", episodes: [Episode(name: "第1集", url: "a"), Episode(name: "第2集", url: "b")]),
+            PlaySource(name: "二", episodes: [Episode(name: "第2集", url: "c"), Episode(name: "第1集", url: "d")]),
+            PlaySource(name: "三", episodes: [Episode(name: "第一集", url: "e"), Episode(name: "第二集", url: "f")]),
+            PlaySource(name: "四", episodes: []),
+        ]
+        let first = nextPlaybackSource(sources: sources, current: 0, episodeName: "第2集", episodeIndex: 1, attempted: [0])
+        XCTAssertEqual(first?.source, 1)
+        XCTAssertEqual(first?.episode, 0)
+        let second = nextPlaybackSource(sources: sources, current: 1, episodeName: "第2集", episodeIndex: 1, attempted: [0, 1])
+        XCTAssertEqual(second?.source, 2)
+        XCTAssertEqual(second?.episode, 1)
+        XCTAssertNil(nextPlaybackSource(sources: sources, current: 2, episodeName: "第2集", episodeIndex: 1, attempted: [0, 1, 2]))
+    }
+
     @MainActor
     func testUnsupportedNextEpisodeStopsPreviousPlayback() {
         let engine = TestPlayerEngine()

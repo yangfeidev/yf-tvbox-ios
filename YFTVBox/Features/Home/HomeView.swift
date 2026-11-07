@@ -8,6 +8,7 @@ struct HomeView: View {
 
     @State private var categories: [Category] = []
     @State private var rails: [HomeRail] = []
+    @State private var failedRails: [Category] = []
     @State private var latest: [MediaItem] = []
     @State private var featured: MediaItem?
     @State private var historyItem: MediaItem?
@@ -130,6 +131,17 @@ struct HomeView: View {
 
                         PosterRail(items: rail.items, cardWidth: cardWidth)
                     }
+                }
+
+                ForEach(failedRails) { category in
+                    HStack {
+                        Text("\(category.name)加载失败").foregroundStyle(XColors.textSecondary)
+                        Spacer()
+                        Button("重试") { Task { await retryRail(category) } }
+                            .disabled(loading)
+                    }
+                    .font(XFont.bodySmall())
+                    .padding(.horizontal, XSpacing.lg)
                 }
 
                 if loading {
@@ -261,7 +273,7 @@ struct HomeView: View {
         loadGeneration += 1
         let generation = loadGeneration
         guard let site = app.currentSite else {
-            categories = []; rails = []; latest = []; featured = nil; loadedSiteKey = ""; loading = false
+            categories = []; rails = []; failedRails = []; latest = []; featured = nil; loadedSiteKey = ""; loading = false
             return
         }
         let siteIdentity = "\(app.settings.activeSubscriptionId)::\(site.key)::\(site.api)"
@@ -269,6 +281,7 @@ struct HomeView: View {
         if loadedSiteKey != siteIdentity { categories = []; rails = []; latest = []; featured = nil }
 
         loading = true
+        failedRails = []
         errorText = nil
         defer { if generation == loadGeneration { loading = false } }
 
@@ -285,12 +298,12 @@ struct HomeView: View {
             let targets = picked.isEmpty ? Array(allCategories.prefix(4)) : picked
 
             // 非 throwing：某个分类挂了只让那一条横轨空着，不能让整页变成错误页
-            let results = await withTaskGroup(of: (Int, [MediaItem]).self) { group in
+            await withTaskGroup(of: (Int, [MediaItem]?).self) { group in
                 for (index, category) in targets.enumerated() {
                     group.addTask {
                         // 请求失败就直接空着：再打一轮子分类只会把首屏拖得更慢
                         guard let page = try? await VodApi.list(site: site, typeId: category.typeId, page: 1) else {
-                            return (index, [])
+                            return (index, nil)
                         }
                         if !page.items.isEmpty { return (index, page.items) }
 
@@ -309,22 +322,49 @@ struct HomeView: View {
                 }
                 var buffer: [Int: [MediaItem]] = [:]
                 for await (index, items) in group {
+                    guard generation == loadGeneration, !Task.isCancelled else {
+                        group.cancelAll()
+                        return
+                    }
+                    guard let items else {
+                        failedRails.append(targets[index])
+                        continue
+                    }
                     buffer[index] = items
+                    rails = targets.enumerated().compactMap { index, category in
+                        guard let items = buffer[index], !items.isEmpty else { return nil }
+                        return HomeRail(category: category, items: items)
+                    }
+                    if latest.isEmpty { featured = rails.first?.items.first }
                 }
-                return buffer
             }
 
             guard generation == loadGeneration, !Task.isCancelled else { return }
-            rails = targets.enumerated().compactMap { index, category in
-                guard let items = results[index], !items.isEmpty else { return nil }
-                return HomeRail(category: category, items: items)
-            }
             if latest.isEmpty { latest = rails.first?.items ?? [] }
             featured = latest.first
             loadedSiteKey = siteIdentity
         } catch {
             guard generation == loadGeneration, !Http.isCancellation(error) else { return }
             errorText = (error as? SourceError)?.message ?? error.localizedDescription
+        }
+    }
+
+    private func retryRail(_ category: Category) async {
+        guard let site = app.currentSite else { return }
+        let generation = loadGeneration
+        do {
+            let page = try await VodApi.list(site: site, typeId: category.typeId, page: 1)
+            guard generation == loadGeneration, !Task.isCancelled else { return }
+            failedRails.removeAll { $0.id == category.id }
+            if !page.items.isEmpty {
+                rails.removeAll { $0.id == category.id }
+                rails.append(HomeRail(category: category, items: page.items))
+                rails.sort {
+                    (categories.firstIndex(of: $0.category) ?? Int.max) < (categories.firstIndex(of: $1.category) ?? Int.max)
+                }
+            }
+        } catch {
+            // 保留重试入口，用户可以再次尝试。
         }
     }
 }

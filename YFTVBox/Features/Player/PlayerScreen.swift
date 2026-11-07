@@ -24,9 +24,12 @@ struct PlayerScreen: View {
     @State private var seekPreviewTask: Task<Void, Never>?
     @State private var autoHideTask: Task<Void, Never>?
     @State private var loadTask: Task<Void, Never>?
+    @State private var attemptedSources: Set<Int> = []
+    @State private var requestedLandscape = false
 
     @Environment(\.dismiss) private var dismiss
     @Environment(AppViewModel.self) private var app
+    @Environment(\.scenePhase) private var scenePhase
 
     init(session: PlaybackSession) {
         _session = State(initialValue: session)
@@ -106,6 +109,7 @@ struct PlayerScreen: View {
             if session.subtitle.isEmpty, let episode = session.currentEpisode {
                 session.subtitle = episode.name
             }
+            attemptedSources = [session.sourceIndex]
             loadEpisode()
             scheduleAutoHide()
         }
@@ -115,6 +119,16 @@ struct PlayerScreen: View {
             loadTask?.cancel()
             saveProgress()
             model.invalidate()
+            if requestedLandscape { requestOrientation(.portrait) }
+        }
+        .task {
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 15_000_000_000) } catch { return }
+                if model.isPlaying { saveProgress() }
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { saveProgress() }
         }
         .onChange(of: model.status) { _, newValue in
             switch newValue {
@@ -123,6 +137,8 @@ struct PlayerScreen: View {
                 advanceToNextEpisode()
             case .playing, .paused:
                 scheduleAutoHide()
+            case .failed:
+                switchToNextSource(automatically: true)
             default:
                 break
             }
@@ -159,7 +175,13 @@ struct PlayerScreen: View {
     private var topBar: some View {
         HStack(spacing: XSpacing.md) {
             Button {
-                dismiss()
+                if requestedLandscape || currentScene?.interfaceOrientation.isLandscape == true {
+                    requestedLandscape = false
+                    requestOrientation(.portrait)
+                    revealControls()
+                } else {
+                    dismiss()
+                }
             } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 18, weight: .semibold))
@@ -182,6 +204,16 @@ struct PlayerScreen: View {
                 }
             }
             Spacer()
+            Button {
+                requestedLandscape.toggle()
+                requestOrientation(requestedLandscape ? .landscapeRight : .portrait)
+                revealControls()
+            } label: {
+                Label(requestedLandscape ? "竖屏" : "横屏", systemImage: "arrow.up.left.and.arrow.down.right")
+                    .font(XFont.bodySmall())
+                    .foregroundStyle(XColors.textPrimary)
+            }
+            .accessibilityIdentifier("player-orientation")
         }
         .padding(.horizontal, XSpacing.lg)
         .padding(.top, XSpacing.sm)
@@ -317,12 +349,15 @@ struct PlayerScreen: View {
                 .multilineTextAlignment(.center)
 
             HStack(spacing: XSpacing.md) {
-                Button("重试") { loadEpisode() }
+                Button("重试") {
+                    attemptedSources = [session.sourceIndex]
+                    loadEpisode()
+                }
                     .buttonStyle(.bordered)
                     .tint(XColors.textSecondary)
 
                 if hasAnotherSource {
-                    Button("换一条线路") { switchToNextSource() }
+                    Button("换一条线路") { switchToNextSource(automatically: false) }
                         .buttonStyle(.borderedProminent)
                         .tint(XColors.accent)
                 }
@@ -352,10 +387,17 @@ struct PlayerScreen: View {
     }
 
     private func switchEpisode(sourceIndex: Int, episodeIndex: Int) {
+        let matchingIndex = session.sources.indices.contains(sourceIndex)
+            ? session.currentEpisode.flatMap {
+                matchingEpisodeIndex(name: $0.name, index: session.episodeIndex, in: session.sources[sourceIndex])
+            } : nil
+        let sameEpisode = sourceIndex != session.sourceIndex && matchingIndex == episodeIndex
+        let fraction = sameEpisode ? (model.duration > 0 ? model.progress : session.resumeFraction) : 0
         if model.status != .ended { saveProgress() }
+        attemptedSources = [sourceIndex]
         session.sourceIndex = sourceIndex
         session.episodeIndex = episodeIndex
-        session.resumeFraction = 0
+        session.resumeFraction = fraction
         session.subtitle = session.currentEpisode?.name ?? ""
         loadEpisode()
         revealControls()
@@ -367,6 +409,8 @@ struct PlayerScreen: View {
         let requested = session
         loadTask = Task { @MainActor in
             do {
+                // 先展示加载状态，让连续的格式预检失败也能触发下一次换线。
+                try await Task.sleep(nanoseconds: 150_000_000)
                 var resolved = requested
                 if let site = requested.librarySite, site.type == 4,
                    let episode = requested.currentEpisode {
@@ -397,11 +441,32 @@ struct PlayerScreen: View {
         switchEpisode(sourceIndex: session.sourceIndex, episodeIndex: session.episodeIndex + 1)
     }
 
-    /// 当前线路播不了时切到下一条线路的第一集
-    private func switchToNextSource() {
-        guard !session.sources.isEmpty else { return }
-        let next = (session.sourceIndex + 1) % session.sources.count
-        switchEpisode(sourceIndex: next, episodeIndex: 0)
+    /// 依次尝试包含同一集的线路，每轮每条只尝试一次。
+    private func switchToNextSource(automatically: Bool) {
+        guard !session.isLive, let current = session.currentEpisode else { return }
+        if !automatically { attemptedSources = [session.sourceIndex] }
+        guard let next = nextPlaybackSource(sources: session.sources, current: session.sourceIndex,
+                                            episodeName: current.name, episodeIndex: session.episodeIndex,
+                                            attempted: attemptedSources) else { return }
+        let fraction = model.duration > 0 ? model.progress : session.resumeFraction
+        saveProgress()
+        attemptedSources.insert(next.source)
+        session.sourceIndex = next.source
+        session.episodeIndex = next.episode
+        session.resumeFraction = fraction
+        session.subtitle = session.currentEpisode?.name ?? ""
+        loadEpisode()
+        revealControls()
+    }
+
+    private func requestOrientation(_ orientation: UIInterfaceOrientationMask) {
+        currentScene?.requestGeometryUpdate(.iOS(interfaceOrientations: orientation))
+    }
+
+    private var currentScene: UIWindowScene? {
+        UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first(where: { $0.activationState == .foregroundActive })
     }
 
     private func saveProgress(finished: Bool = false) {
