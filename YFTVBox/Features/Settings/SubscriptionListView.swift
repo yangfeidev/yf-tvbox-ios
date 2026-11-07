@@ -233,38 +233,43 @@ struct SiteListView: View {
                         .foregroundStyle(XColors.textTertiary)
                 }
                 ForEach(app.usableSites) { site in
-                    Button {
-                        app.selectSite(site)
-                    } label: {
-                        HStack(spacing: XSpacing.md) {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(site.name)
-                                    .font(XFont.body())
-                                    .foregroundStyle(XColors.textPrimary)
-                                    .lineLimit(1)
-                                Text("type \(site.type) · \(apiHost(site.api))")
-                                    .font(XFont.caption())
-                                    .foregroundStyle(XColors.textTertiary)
-                                    .lineLimit(1)
+                    HStack(spacing: XSpacing.md) {
+                        Button {
+                            app.selectSite(site)
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(site.name)
+                                        .font(XFont.body())
+                                        .foregroundStyle(XColors.textPrimary)
+                                        .lineLimit(1)
+                                    Text("type \(site.type) · \(apiHost(site.api))")
+                                        .font(XFont.caption())
+                                        .foregroundStyle(XColors.textTertiary)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                if site.key == app.currentSite?.key {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(XColors.accent)
+                                }
                             }
-                            Spacer()
-                            Button {
-                                app.togglePinnedSite(site)
-                            } label: {
-                                Image(systemName: app.isPinned(site) ? "pin.fill" : "pin")
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(app.isPinned(site) ? XColors.accent : XColors.textTertiary)
-                            }
-                            .buttonStyle(.plain)
-
-                            if site.key == app.currentSite?.key {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(XColors.accent)
-                            }
+                            .contentShape(Rectangle())
                         }
-                        .padding(.vertical, 2)
+                        .buttonStyle(.plain)
+                        Button {
+                            app.togglePinnedSite(site)
+                        } label: {
+                            Image(systemName: app.isPinned(site) ? "pin.fill" : "pin")
+                                .font(.system(size: 13))
+                                .foregroundStyle(app.isPinned(site) ? XColors.accent : XColors.textTertiary)
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(app.isPinned(site) ? "取消置顶" : "置顶") \(site.name)")
                     }
-                    .buttonStyle(.plain)
+                    .padding(.vertical, 2)
                 }
             } header: {
                 Text("可用站点 \(app.usableSites.count)")

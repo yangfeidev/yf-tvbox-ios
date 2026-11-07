@@ -88,21 +88,32 @@ struct RemoteImage: View {
         Rectangle()
             .fill(XColors.posterPlaceholder)
             .overlay {
-                if let image {
-                    Image(uiImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: fit ? .fit : .fill)
-                } else if failed {
-                    Image(systemName: "photo")
-                        .font(.system(size: 18))
-                        .foregroundStyle(XColors.textTertiary)
-                } else {
-                    ProgressView().tint(XColors.textTertiary)
+                Group {
+                    if let image {
+                        Image(uiImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: fit ? .fit : .fill)
+                    } else if failed {
+                        Image(systemName: "photo")
+                            .font(.system(size: 18))
+                            .foregroundStyle(XColors.textTertiary)
+                    } else {
+                        ProgressView().tint(XColors.textTertiary)
+                    }
                 }
+                // aspectFill 的内容即使被裁剪也可能超出可见区域参与命中。
+                // 图片只是装饰，由外层按钮或链接负责响应点击。
+                .allowsHitTesting(false)
             }
             .clipped()
             .task(id: url) {
             failed = false
+            #if DEBUG
+            if url == "debug-hit-test-image" {
+                image = UIImage(named: "AndroidBrand")
+                return
+            }
+            #endif
             image = ImageCache.shared.cached(url)
             guard image == nil else { return }
             ImageCache.shared.load(url) { loaded in

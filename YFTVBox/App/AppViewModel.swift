@@ -59,6 +59,14 @@ final class AppViewModel {
         guard !didBootstrap else { return }
         didBootstrap = true
 
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DEBUG_HOME_HIT_TEST"] == "1" {
+            currentSite = Site(key: "hit-test", name: "测试站点", api: "http://127.0.0.1:1", type: 1)
+            initializing = false
+            return
+        }
+        #endif
+
         settings = store.loadSettings()
         subscriptions = store.loadSubscriptions()
         favorites = store.loadFavorites()

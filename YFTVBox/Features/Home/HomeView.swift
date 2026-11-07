@@ -67,16 +67,16 @@ struct HomeView: View {
                             Text("当前片源 · \(site.name)").font(XFont.caption()).foregroundStyle(XColors.textSecondary)
                         }
                         Spacer()
-                        Button { Task { await load(force: true) } } label: { homeAction("arrow.clockwise") }
-                        NavigationLink { SearchView() } label: { homeAction("magnifyingglass") }.accessibilityLabel("首页搜索")
-                        NavigationLink { SettingsView(showsNavigationBar: true) } label: { homeAction("slider.horizontal.3") }
+                        Button { Task { await load(force: true) } } label: { homeAction("arrow.clockwise") }.accessibilityIdentifier("home-refresh")
+                        NavigationLink { SearchView() } label: { homeAction("magnifyingglass") }.accessibilityLabel("首页搜索").accessibilityIdentifier("home-search")
+                        NavigationLink { SettingsView(showsNavigationBar: true) } label: { homeAction("slider.horizontal.3") }.accessibilityLabel("首页设置").accessibilityIdentifier("home-settings")
                     }.padding(.horizontal, XSpacing.lg)
                 }
 
                 if let featured {
                     NavigationLink(value: featured) {
                         FeaturedCard(item: featured).padding(.horizontal, XSpacing.lg)
-                    }.buttonStyle(.plain)
+                    }.buttonStyle(.plain).accessibilityIdentifier("home-featured")
                 }
 
                 let history = Array(app.history.filter { entry in app.usableSites.contains { $0.key == entry.siteKey } }.prefix(10))
@@ -276,6 +276,13 @@ struct HomeView: View {
             categories = []; rails = []; failedRails = []; latest = []; featured = nil; loadedSiteKey = ""; loading = false
             return
         }
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DEBUG_HOME_HIT_TEST"] == "1" {
+            let item = MediaItem(id: "hit-test", name: "测试影片", poster: "debug-hit-test-image")
+            latest = [item]; featured = item; rails = []; loading = false
+            return
+        }
+        #endif
         let siteIdentity = "\(app.settings.activeSubscriptionId)::\(site.key)::\(site.api)"
         if !force, loadedSiteKey == siteIdentity, !rails.isEmpty { return }
         if loadedSiteKey != siteIdentity { categories = []; rails = []; latest = []; featured = nil }
@@ -392,6 +399,9 @@ private struct FeaturedCard: View {
                     Text("详情").foregroundStyle(XColors.textPrimary).padding(.horizontal, 20).padding(.vertical, 10).background(XColors.surfaceRaised, in: Capsule())
                 }.font(XFont.bodySmall()).padding(.top, 8)
             }.padding(20)
-        }.frame(height: 204).clipShape(RoundedRectangle(cornerRadius: XRadii.lg))
+        }
+        .frame(height: 204)
+        .clipShape(RoundedRectangle(cornerRadius: XRadii.lg))
+        .contentShape(Rectangle())
     }
 }

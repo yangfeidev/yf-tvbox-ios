@@ -21,6 +21,31 @@ final class WalkthroughTests: XCTestCase {
         app.launch()
     }
 
+    func testHomeHeaderAndBannerOpenTheirOwnDestinations() throws {
+        app.terminate()
+        app.launchEnvironment["DEBUG_HOME_HIT_TEST"] = "1"
+        app.launch()
+        let banner = app.buttons["home-featured"]
+        XCTAssertTrue(banner.waitForExistence(timeout: 90))
+        // 方形海报填充横幅后会被裁剪，验证可见区域外不会拦截点击。
+        sleep(1)
+        let search = app.buttons["home-search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 10))
+        search.tap()
+        XCTAssertTrue(app.textFields["search-query"].waitForExistence(timeout: 10), "首页搜索应打开搜索页")
+        goBack()
+
+        let settings = app.buttons["home-settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 10))
+        settings.tap()
+        XCTAssertTrue(app.buttons["settings-add-subscription"].waitForExistence(timeout: 10), "首页设置应打开设置页")
+        goBack()
+
+        XCTAssertTrue(banner.waitForExistence(timeout: 10))
+        banner.tap()
+        XCTAssertTrue(app.buttons["detail-play"].waitForExistence(timeout: 10), "Banner 应打开影片详情")
+    }
+
     func testSearchAutomaticallyFocuses() throws {
         tapTab(1)
         let search = app.buttons["搜索"]
