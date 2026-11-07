@@ -58,7 +58,7 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
 
         statusObservation = item.observe(\.status, options: [.new, .initial]) { [weak self] item, _ in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.player.currentItem === item else { return }
                 switch item.status {
                 case .readyToPlay:
                     self.applyPendingStartIfNeeded()
@@ -78,13 +78,15 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
             object: item,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.onStatus?(.ended) }
+            Task { @MainActor in
+                guard let self, self.player.currentItem === item else { return }
+                self.onStatus?(.ended)
+            }
         }
     }
 
     func play() {
-        player.play()
-        onStatus?(.playing)
+        player.playImmediately(atRate: desiredRate)
     }
 
     func pause() {
@@ -92,13 +94,22 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         onStatus?(.paused)
     }
 
+    func stop() {
+        removeItemObservers()
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+    }
+
     func seek(to seconds: Double) {
         let target = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
         player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
     }
 
+    private var desiredRate: Float = 1
+
     func setRate(_ rate: Float) {
-        player.rate = rate
+        desiredRate = rate
+        if player.timeControlStatus != .paused { player.rate = rate }
     }
 
     func setAspectFill(_ fill: Bool) {
@@ -226,8 +237,10 @@ final class PlaybackModel {
         self.engine = resolved
         resolved.onStatus = { [weak self] status in
             guard let self else { return }
+            if case .failed = self.status { return }
             self.status = status
-            if status != .buffering { self.cancelWatchdog() }
+            if case .failed = status { self.cancelWatchdog() }
+            if status == .ended { self.cancelWatchdog() }
             self.refreshNowPlayingRate()
         }
         resolved.onProgress = { [weak self] time, duration in
@@ -244,7 +257,23 @@ final class PlaybackModel {
         }
     }
 
+    func prepareForLoad() {
+        cancelWatchdog()
+        engine.stop()
+        pendingFraction = nil
+        currentTime = 0
+        duration = 0
+        status = .buffering
+    }
+
+    func fail(_ message: String) {
+        cancelWatchdog()
+        engine.pause()
+        status = .failed(message)
+    }
+
     func load(session: PlaybackSession) {
+        prepareForLoad()
         guard let episode = session.currentEpisode else {
             status = .failed("这一集没有可用的播放地址")
             return
@@ -286,7 +315,8 @@ final class PlaybackModel {
             // 30 秒：慢速 CDN 首帧经常要 15~20 秒，20 秒会误杀
             try? await Task.sleep(nanoseconds: 30_000_000_000)
             guard !Task.isCancelled else { return }
-            if case .buffering = self.status {
+            if self.status == .buffering || self.status == .playing {
+                self.engine.pause()
                 self.status = .failed("加载超时：30 秒没有画面。这个源可能已失效，换一条线路试试")
             }
         }
@@ -418,7 +448,6 @@ final class PlaybackModel {
     }
 
     private func deactivateNowPlaying() {
-        guard nowPlayingActive else { return }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         nowPlayingActive = false
         let center = MPRemoteCommandCenter.shared()

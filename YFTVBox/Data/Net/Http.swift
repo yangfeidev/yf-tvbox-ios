@@ -38,20 +38,21 @@ enum Http {
     }()
 
     /// 按需放宽超时用的独立 session（直播聚合地址要 45 秒）
-    private static var relaxedSessions: [TimeInterval: URLSession] = [:]
+    private static var relaxedSessions: [String: URLSession] = [:]
     private static let lock = NSLock()
 
     private static func session(readTimeout: TimeInterval, resourceTimeout: TimeInterval) -> URLSession {
         if readTimeout == 15 && resourceTimeout == 15 { return sharedSession }
         lock.lock()
         defer { lock.unlock() }
-        if let existing = relaxedSessions[resourceTimeout] { return existing }
+        let key = "\(readTimeout):\(resourceTimeout)"
+        if let existing = relaxedSessions[key] { return existing }
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = readTimeout
         config.timeoutIntervalForResource = resourceTimeout
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         let created = URLSession(configuration: config)
-        relaxedSessions[resourceTimeout] = created
+        relaxedSessions[key] = created
         return created
     }
 
@@ -63,7 +64,7 @@ enum Http {
     ) async throws -> String {
         let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw SourceError("地址为空") }
-        guard let requestURL = URL(string: trimmed), requestURL.scheme != nil else {
+        guard let requestURL = URL(string: trimmed), ["http", "https"].contains(requestURL.scheme?.lowercased() ?? ""), requestURL.host != nil else {
             throw SourceError("地址格式不正确")
         }
 
@@ -107,7 +108,7 @@ enum Http {
            let raw = http.value(forHTTPHeaderField: "Content-Type"),
            let charset = charsetName(in: raw),
            let encoding = encoding(for: charset) {
-            return String(data: data, encoding: encoding)
+            if let decoded = String(data: data, encoding: encoding) { return decoded }
         }
         // 2. 严格 UTF-8（invalid 字节会让整段返回 nil，不会像 lossy 那样把乱码当成功）
         if let utf8 = String(data: data, encoding: .utf8) { return utf8 }

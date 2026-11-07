@@ -16,6 +16,7 @@ struct SearchView: View {
     @State private var loading = false
     @State private var errorText: String?
     @State private var hasSearched = false
+    @State private var searchGeneration = 0
     @FocusState private var focused: Bool
 
     private var columns: [GridItem] {
@@ -58,6 +59,13 @@ struct SearchView: View {
         .background(XColors.background)
         .navigationTitle("搜索")
         .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: app.currentSite) { _, _ in
+            searchGeneration += 1
+            loading = false
+            results = []
+            hasSearched = false
+            errorText = nil
+        }
         .navigationDestination(for: MediaItem.self) { item in
             DetailView(item: item)
         }
@@ -79,6 +87,9 @@ struct SearchView: View {
                     .onSubmit { Task { await search() } }
                 if !query.isEmpty {
                     Button {
+                        searchGeneration += 1
+                        loading = false
+                        errorText = nil
                         query = ""
                         results = []
                         hasSearched = false
@@ -138,18 +149,21 @@ struct SearchView: View {
             return
         }
 
+        searchGeneration += 1
+        let generation = searchGeneration
         focused = false
         loading = true
         errorText = nil
         hasSearched = true
-        defer { loading = false }
+        defer { if generation == searchGeneration { loading = false } }
 
         do {
             let page = try await VodApi.search(site: site, keyword: keyword)
+            guard generation == searchGeneration else { return }
             results = page.items
             app.recordSearch(keyword)
         } catch {
-            guard !Http.isCancellation(error) else { return }
+            guard generation == searchGeneration, !Http.isCancellation(error) else { return }
             errorText = (error as? SourceError)?.message ?? error.localizedDescription
             results = []
         }

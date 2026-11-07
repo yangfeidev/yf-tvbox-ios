@@ -9,6 +9,7 @@ import SwiftUI
 struct DetailView: View {
 
     let item: MediaItem
+    var autoResume = false
 
     @Environment(AppViewModel.self) private var app
     @Environment(\.formFactor) private var form
@@ -274,6 +275,7 @@ struct DetailView: View {
             ) {
                 sourceIndex = resume.sourceIndex
             }
+            if autoResume { playPrimary() }
         } catch {
             guard !Http.isCancellation(error) else { return }
             errorText = (error as? SourceError)?.message ?? error.localizedDescription

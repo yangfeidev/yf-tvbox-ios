@@ -13,6 +13,7 @@ struct LibraryView: View {
 
     @State private var tab = 0
     @State private var pendingItem: MediaItem?
+    @State private var missingSite = false
 
     private var columns: [GridItem] {
         Array(repeating: GridItem(.flexible(), spacing: form.spacing), count: form.gridColumns)
@@ -20,11 +21,11 @@ struct LibraryView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("", selection: $tab) {
-                Text("收藏 \(app.favorites.count)").tag(0)
-                Text("历史 \(app.history.count)").tag(1)
+            HStack(spacing: 8) {
+                libraryTab("收藏 \(app.favorites.count)", index: 0)
+                libraryTab("历史 \(app.history.count)", index: 1)
+                Spacer()
             }
-            .pickerStyle(.segmented)
             .padding(.horizontal, form.horizontalPadding)
             .padding(.vertical, XSpacing.sm)
 
@@ -37,10 +38,15 @@ struct LibraryView: View {
             }
         }
         .background(XColors.background)
-        .navigationTitle("我的影视")
+        .navigationTitle("我的")
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(item: $pendingItem) { item in
             DetailView(item: item)
+        }
+        .alert("找不到原站点", isPresented: $missingSite) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text("请切换到包含该站点的订阅后重试。")
         }
         .toolbar {
             if tab == 1, !app.history.isEmpty {
@@ -68,9 +74,7 @@ struct LibraryView: View {
                         .buttonStyle(.plain)
                         .contextMenu {
                             Button(role: .destructive) {
-                                if let site = app.usableSites.first(where: { $0.key == entry.siteKey }) {
-                                    app.toggleFavorite(entry.toMediaItem(), site: site)
-                                }
+                                app.removeFavorite(entry)
                             } label: {
                                 Label("取消收藏", systemImage: "heart.slash")
                             }
@@ -88,36 +92,43 @@ struct LibraryView: View {
             if app.history.isEmpty {
                 EmptyBlock(icon: "clock", title: "还没有观看记录")
             } else {
-                LazyVStack(spacing: 0) {
+                LazyVGrid(columns: columns, spacing: form.spacing) {
                     ForEach(app.history) { entry in
-                        Button {
-                            open(entry)
-                        } label: {
-                            HistoryRow(entry: entry)
+                        VStack(spacing: 6) {
+                            Button { open(entry) } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    PosterGridCell(item: entry.toMediaItem())
+                                    if entry.progress > 0 {
+                                        ProgressView(value: Double(entry.progress)).tint(XColors.accent)
+                                    }
+                                }
+                            }.buttonStyle(.plain)
+                            Button("删除记录") { app.removeHistory(entry) }
+                                .font(XFont.caption()).foregroundStyle(XColors.textSecondary)
+                                .frame(maxWidth: .infinity).padding(.vertical, 7)
+                                .background(XColors.surfaceRaised, in: Capsule())
                         }
-                        .buttonStyle(.plain)
-                        .contextMenu {
-                            Button(role: .destructive) {
-                                app.removeHistory(entry)
-                            } label: {
-                                Label("删除记录", systemImage: "trash")
-                            }
-                        }
-
-                        Divider().overlay(XColors.divider)
-                            .padding(.leading, form.horizontalPadding + 64)
                     }
-                }
-                .padding(.top, XSpacing.sm)
+                }.padding(.horizontal, form.horizontalPadding).padding(.top, XSpacing.md)
             }
         }
     }
 
+    private func libraryTab(_ title: String, index: Int) -> some View {
+        Button { tab = index } label: {
+            Text(title).font(XFont.bodySmall())
+                .foregroundStyle(tab == index ? XColors.onAccent : XColors.textSecondary)
+                .padding(.horizontal, 16).padding(.vertical, 8)
+                .background(tab == index ? XColors.accent : XColors.surfaceRaised, in: Capsule())
+        }.buttonStyle(.plain)
+    }
+
     private func open(_ entry: LibraryEntry) {
-        if let site = app.usableSites.first(where: { $0.key == entry.siteKey }),
-           site.key != app.currentSite?.key {
-            app.selectSite(site)
+        guard let site = app.usableSites.first(where: { $0.key == entry.siteKey }) else {
+            missingSite = true
+            return
         }
+        if site.key != app.currentSite?.key { app.selectSite(site) }
         pendingItem = entry.toMediaItem()
     }
 }

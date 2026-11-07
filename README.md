@@ -2,23 +2,23 @@
 
 TVBox 类壳应用的 iOS 版，SwiftUI 重写。**iPhone / iPad 双端，不含投屏、不含 tvOS。**
 
-> 本应用不内置任何内容源。所有内容均来自使用者自行添加的订阅地址。
+> 应用配置了默认订阅和直播地址，也支持使用者自行添加或修改。内容由相应源提供。
 
 ## 现在能做什么
 
 - **订阅**：标准 TVBox JSON / 多仓（导入时选子仓库）/ 裸地址；多订阅并存、点按切换、左滑删除、本地缓存、启动静默刷新
-- **站点**：可用站点列表、置顶、跳过来源说明（spider 源 iOS 上跑不了，明确告知数量而不是静默丢弃）
-- **首页**：分类胶囊 + 焦点推荐 + 多行横轨；父分类没内容时自动回退到子分类
-- **分类**：网格 + 滚动翻页
+- **站点**：可用站点列表、置顶、跳过来源说明（本地 Spider 无法运行，远程 type 4 接口支持）
+- **首页**：最新上线大图、继续观看、最近更新和分类横轨
+- **分类**：全部及分类标签、左右滑动切换、网格滚动翻页
 - **详情**：线路切换、剧集网格、收藏、续播（记住线路与集数）
 - **搜索**：当前站点搜索 + 搜索历史
 - **直播**：M3U / TXT、按 group-title 分组、三级缓存（内存 10 分钟 / 磁盘 2 小时 / 网络 45 秒超时）、网络失败回退过期缓存
-- **播放**：AVPlayer、自绘控制层（4 秒自动隐藏、双击播放暂停、±10 秒、拖动进度、倍速、画面比例、选集、播完自动下一集、失败换线路、30 秒起播看门狗）、锁屏信息与耳机线控
+- **播放**：AVPlayer、自绘控制层（4 秒自动隐藏、双击播放暂停、±10 秒、拖动进度、横向滑动预览快进快退、倍速、画面比例、选集、播完自动下一集、失败换线路、30 秒起播看门狗）、锁屏信息与耳机线控
 - **我的**：收藏与历史、观看进度、清空历史、检查更新（引导下载，iOS 不能自装）
 
 ## 与 Android 版的关系
 
-不是移植，是重写。数据层与解析逻辑按 Kotlin 版逐行对照实现，UI 全部重做：
+数据层与解析逻辑参考 Kotlin 版实现，界面和交互逐步对齐 Android：
 
 | Android（Compose） | iOS（SwiftUI） | 说明 |
 |---|---|---|
@@ -38,7 +38,7 @@ TVBox 类壳应用的 iOS 版，SwiftUI 重写。**iPhone / iPad 双端，不含
 
 ```
 YFTVBox/
-├── App/                入口、根视图（自绘底部栏，首次访问才构建、之后保活）
+├── App/                入口、根视图（手机底栏 / 平板侧栏，首次访问才构建、之后保活）
 ├── Core/               设计令牌、形态判定、默认源地址
 ├── Data/
 │   ├── Models.swift
@@ -51,7 +51,7 @@ YFTVBox/
 ├── VM/AppViewModel.swift
 ├── UI/                 Home / Category / Detail / Search / Library / Live / Settings / Components
 └── Resources/          Assets.xcassets（App 图标 + 强调色）
-YFTVBoxTests/           解析层单元测试（24 个用例）
+YFTVBoxTests/           解析层单元测试
 YFTVBoxUITests/         逐页走查（截图挂进测试报告）
 ```
 
@@ -104,11 +104,11 @@ xcodebuild test -project YFTVBox.xcodeproj -scheme YFTVBox \
 2. `xcrun devicectl device install app --device <UDID> build/YFTVBox.xcarchive/Products/Applications/YFTVBox.app`
 3. Apple Configurator / Sideloadly / iMazing 拖入 ipa
 
-注意：development 签名约一年有效期；包内描述文件只认列表里的设备 UDID，换机要重新注册并出包。
+注意：development 签名和描述文件的有效期取决于账号与实际证书；包内描述文件只认列表里的设备 UDID，换机要重新注册并出包。
 
 ## 播放内核
 
-AVPlayer 只吃 HLS（m3u8）与 mp4 / mov。源站里大量 `.flv` / `.mkv` / `.ts` / `.mpd` 在 iOS 上无法解码。
+AVPlayer 可播放兼容编码的 HLS（m3u8）与 MP4 / MOV；其他封装和编码的支持情况取决于实际媒体。
 
 因此：
 
@@ -117,11 +117,7 @@ AVPlayer 只吃 HLS（m3u8）与 mp4 / mov。源站里大量 `.flv` / `.mkv` / `
 3. 失败界面提供「换一条线路」，多线路源一键切下一条
 4. 30 秒无画面判定为起播失败（慢速 CDN 首帧常要 15~20 秒，20 秒会误杀）
 
-源站格式构成可以用 Android 仓库里的探针脚本量化：
-
-```bash
-python3 ../yf-tvbox/scripts/probe_formats.py <订阅地址>
-```
+不同源的格式和编码需要通过实际播放测试确认。
 
 ### 检查更新的清单
 
@@ -144,7 +140,7 @@ iOS 用独立清单（Android 的 `apkUrl` 在这里没意义），托管在 R2 
 
 ## 测试
 
-- `YFTVBoxTests`（24 个用例）：VodParser 的 JSON/XML、三层分隔符、脏数据降级；LiveParser 的 m3u/txt、组播与 IPv6 过滤、伪频道过滤；SubscriptionApi 的三种形态与异常；格式预检；续播定位
+- `YFTVBoxTests`：VodParser 的 JSON/XML、三层分隔符、脏数据降级；LiveParser 的 m3u/txt、组播与 IPv6 过滤、伪频道过滤；SubscriptionApi 的三种形态与异常；格式预检；续播定位
 - `YFTVBoxUITests`：走查首页 → 详情 → 播放 → 直播 → 搜索 → 我的 → 订阅管理，每页截图挂进 `xcresult`，用 `xcrun xcresulttool export attachments` 导出逐张看
 
 ## 未实现 / 已知限制
@@ -157,5 +153,5 @@ iOS 用独立清单（Android 的 `apkUrl` 在这里没意义），托管在 R2 
 
 ## 分发
 
-这种"空壳 + 用户自填源"的形态在 App Store 过审概率极低，实际路线只有 TestFlight / Ad-hoc / 自签。
+分发方式包括 TestFlight、Ad Hoc 和开发签名；如考虑 App Store，需根据实际内容来源和功能评估审核要求。
 `Info.plist` 已放开明文 HTTP（源站大量是 `http://`），自签与 TestFlight 下必需；若将来要上架，这一条会被审核追问。

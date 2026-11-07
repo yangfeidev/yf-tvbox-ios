@@ -18,7 +18,12 @@ struct PlayerScreen: View {
     @State private var showEpisodes = false
     @State private var scrubbing = false
     @State private var scrubValue: Double = 0
+    @State private var dragStart: Double?
+    @State private var dragTarget: Double?
+    @State private var draggingSeek = false
+    @State private var seekPreviewTask: Task<Void, Never>?
     @State private var autoHideTask: Task<Void, Never>?
+    @State private var loadTask: Task<Void, Never>?
 
     @Environment(\.dismiss) private var dismiss
     @Environment(AppViewModel.self) private var app
@@ -30,10 +35,58 @@ struct PlayerScreen: View {
     var body: some View {
         ZStack {
             XColors.videoBackground.ignoresSafeArea()
-            PlayerSurface(model: model).ignoresSafeArea()
+            GeometryReader { geometry in
+                PlayerSurface(model: model)
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) {
+                        model.togglePlay()
+                        revealControls()
+                    }
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.2)) { controlsVisible.toggle() }
+                        if controlsVisible { scheduleAutoHide() } else { autoHideTask?.cancel() }
+                    }
+                    .gesture(DragGesture(minimumDistance: 15)
+                        .onChanged { value in
+                            guard !session.isLive, model.failureMessage == nil, model.duration > 0,
+                                  abs(value.translation.width) > abs(value.translation.height) else { return }
+                            if !draggingSeek {
+                                draggingSeek = true
+                                seekPreviewTask?.cancel()
+                                dragStart = model.currentTime
+                                autoHideTask?.cancel()
+                            }
+                            dragTarget = swipeSeekTarget(start: dragStart ?? 0, translation: value.translation.width, width: geometry.size.width, duration: model.duration)
+                        }
+                        .onEnded { _ in
+                            if let target = dragTarget, model.duration > 0 {
+                                model.seek(toProgress: target / model.duration)
+                                revealControls()
+                            }
+                            draggingSeek = false
+                            seekPreviewTask?.cancel()
+                            seekPreviewTask = Task { @MainActor in
+                                try? await Task.sleep(nanoseconds: 1_300_000_000)
+                                guard !Task.isCancelled else { return }
+                                dragStart = nil; dragTarget = nil
+                            }
+                        })
+            }.ignoresSafeArea()
 
             if controlsVisible, model.failureMessage == nil {
                 controlLayer.transition(.opacity)
+            }
+
+            if let target = dragTarget, let start = dragStart {
+                VStack(spacing: 8) {
+                    let delta = Int(target - start)
+                    Text(delta >= 0 ? "快进 +\(delta)秒" : "快退 \(-delta)秒")
+                        .font(XFont.title()).foregroundStyle(XColors.textPrimary)
+                    Text("\(format(target)) / \(format(model.duration))")
+                        .font(XFont.bodySmall()).foregroundStyle(XColors.textSecondary).monospacedDigit()
+                }
+                .padding(20).background(XColors.scrim, in: RoundedRectangle(cornerRadius: 12))
+                .allowsHitTesting(false)
             }
 
             // 失败态必须在控制层之上：否则错误文案会被播放/快进按钮压住，根本看不清
@@ -46,15 +99,6 @@ struct PlayerScreen: View {
                 }
             }
         }
-        .contentShape(Rectangle())
-        .onTapGesture(count: 2) {
-            model.togglePlay()
-            revealControls()
-        }
-        .onTapGesture {
-            withAnimation(.easeInOut(duration: 0.2)) { controlsVisible.toggle() }
-            if controlsVisible { scheduleAutoHide() } else { autoHideTask?.cancel() }
-        }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .onAppear {
@@ -62,11 +106,13 @@ struct PlayerScreen: View {
             if session.subtitle.isEmpty, let episode = session.currentEpisode {
                 session.subtitle = episode.name
             }
-            model.load(session: session)
+            loadEpisode()
             scheduleAutoHide()
         }
         .onDisappear {
             autoHideTask?.cancel()
+            seekPreviewTask?.cancel()
+            loadTask?.cancel()
             saveProgress()
             model.invalidate()
         }
@@ -106,14 +152,13 @@ struct PlayerScreen: View {
                 startPoint: .top,
                 endPoint: .bottom
             )
-            .ignoresSafeArea()
+            .ignoresSafeArea().allowsHitTesting(false)
         )
     }
 
     private var topBar: some View {
         HStack(spacing: XSpacing.md) {
             Button {
-                saveProgress()
                 dismiss()
             } label: {
                 Image(systemName: "chevron.left")
@@ -272,7 +317,7 @@ struct PlayerScreen: View {
                 .multilineTextAlignment(.center)
 
             HStack(spacing: XSpacing.md) {
-                Button("重试") { model.load(session: session) }
+                Button("重试") { loadEpisode() }
                     .buttonStyle(.bordered)
                     .tint(XColors.textSecondary)
 
@@ -307,13 +352,38 @@ struct PlayerScreen: View {
     }
 
     private func switchEpisode(sourceIndex: Int, episodeIndex: Int) {
-        saveProgress()
+        if model.status != .ended { saveProgress() }
         session.sourceIndex = sourceIndex
         session.episodeIndex = episodeIndex
         session.resumeFraction = 0
         session.subtitle = session.currentEpisode?.name ?? ""
-        model.load(session: session)
+        loadEpisode()
         revealControls()
+    }
+
+    private func loadEpisode() {
+        loadTask?.cancel()
+        model.prepareForLoad()
+        let requested = session
+        loadTask = Task { @MainActor in
+            do {
+                var resolved = requested
+                if let site = requested.librarySite, site.type == 4,
+                   let episode = requested.currentEpisode {
+                    let playback = try await VodApi.resolvePlayback(
+                        site: site, flag: requested.currentSourceName, id: episode.url
+                    )
+                    guard !Task.isCancelled else { return }
+                    resolved.sources[resolved.sourceIndex].episodes[resolved.episodeIndex].url = playback.url
+                    resolved.headers = playback.headers
+                }
+                guard !Task.isCancelled else { return }
+                model.load(session: resolved)
+            } catch {
+                guard !Task.isCancelled, !Http.isCancellation(error) else { return }
+                model.fail(error.localizedDescription)
+            }
+        }
     }
 
     /// 播完自动下一集；已是最后一集就停在结束态
@@ -478,4 +548,11 @@ private struct EpisodePickerSheet: View {
             .navigationBarTitleDisplayMode(.inline)
         }
     }
+}
+
+/// Matches Android's full-width swipe range and clamps to the media duration.
+func swipeSeekTarget(start: Double, translation: CGFloat, width: CGFloat, duration: Double) -> Double {
+    guard width > 0, duration > 0, duration.isFinite else { return max(start, 0) }
+    let range = min(max(duration / 3, 60), 600)
+    return min(max(start + Double(translation / width) * range, 0), duration)
 }

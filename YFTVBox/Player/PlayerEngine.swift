@@ -20,6 +20,7 @@ enum PlayerEngineStatus: Equatable {
     case failed(String)
 }
 
+@MainActor
 protocol PlayerEngine: AnyObject {
     var onStatus: ((PlayerEngineStatus) -> Void)? { get set }
     var onProgress: ((_ time: Double, _ duration: Double) -> Void)? { get set }
@@ -27,6 +28,7 @@ protocol PlayerEngine: AnyObject {
     func load(url: String, headers: [String: String], startAt: Double)
     func play()
     func pause()
+    func stop()
     func seek(to seconds: Double)
     func setRate(_ rate: Float)
     func setAspectFill(_ fill: Bool)
@@ -83,8 +85,8 @@ enum PlaybackFormat {
     ]
 
     static func unsupportedReason(for url: String) -> String? {
-        let lower = url.lowercased()
-        for item in unsupported where lower.contains(item.ext) {
+        let path = URLComponents(string: url)?.path.lowercased() ?? ""
+        for item in unsupported where path.hasSuffix(item.ext) {
             return "这是一条 \(item.label) 直链，iOS 系统解码器不支持这种封装格式"
         }
         return nil

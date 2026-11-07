@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 @testable import YFTVBox
 
 /**
@@ -191,6 +192,7 @@ final class LiveAndSubscriptionTests: XCTestCase {
         XCTAssertNil(PlaybackFormat.unsupportedReason(for: "https://a/b.mp4"))
         // ts 不拦，交给 AVPlayer 自己试
         XCTAssertNil(PlaybackFormat.unsupportedReason(for: "https://a/b.ts"))
+        XCTAssertNil(PlaybackFormat.unsupportedReason(for: "https://mkv.example/video.m3u8?next=film.flv"))
     }
 
     // MARK: - 续播定位
@@ -230,5 +232,54 @@ final class LiveAndSubscriptionTests: XCTestCase {
         XCTAssertNil(findResumeTarget(sources: sources, history: done))
 
         XCTAssertNil(findResumeTarget(sources: sources, history: nil))
+    }
+}
+
+
+@MainActor
+private final class TestPlayerEngine: PlayerEngine {
+    var onStatus: ((PlayerEngineStatus) -> Void)?
+    var onProgress: ((Double, Double) -> Void)?
+    var loadedURLs: [String] = []
+    var pauseCount = 0
+    func load(url: String, headers: [String: String], startAt: Double) { loadedURLs.append(url) }
+    func play() {}
+    func pause() { pauseCount += 1 }
+    func stop() { pauseCount += 1 }
+    func seek(to seconds: Double) {}
+    func setRate(_ rate: Float) {}
+    func setAspectFill(_ fill: Bool) {}
+    func makeSurface() -> UIView { UIView() }
+    func invalidate() {}
+}
+
+final class PlaybackRegressionTests: XCTestCase {
+    @MainActor
+    func testUnsupportedNextEpisodeStopsPreviousPlayback() {
+        let engine = TestPlayerEngine()
+        let model = PlaybackModel(engine: engine)
+        var session = PlaybackSession(title: "测试", sources: [PlaySource(name: "线路", episodes: [
+            Episode(name: "1", url: "https://example.com/1.m3u8"),
+            Episode(name: "2", url: "https://example.com/2.mkv")
+        ])], sourceIndex: 0, episodeIndex: 0)
+        model.load(session: session)
+        let pauses = engine.pauseCount
+        session.episodeIndex = 1
+        model.load(session: session)
+        XCTAssertGreaterThan(engine.pauseCount, pauses)
+        XCTAssertNotNil(model.failureMessage)
+        XCTAssertEqual(engine.loadedURLs, ["https://example.com/1.m3u8"])
+        engine.onStatus?(.paused)
+        XCTAssertNotNil(model.failureMessage)
+        model.invalidate()
+    }
+}
+
+final class SwipeSeekTests: XCTestCase {
+    func testSwipeRangeAndBounds() {
+        XCTAssertEqual(swipeSeekTarget(start: 120, translation: 200, width: 400, duration: 1800), 420, accuracy: 0.001)
+        XCTAssertEqual(swipeSeekTarget(start: 5, translation: -400, width: 400, duration: 30), 0, accuracy: 0.001)
+        XCTAssertEqual(swipeSeekTarget(start: 1790, translation: 400, width: 400, duration: 1800), 1800, accuracy: 0.001)
+        XCTAssertEqual(swipeSeekTarget(start: 50, translation: 400, width: 0, duration: 1800), 50, accuracy: 0.001)
     }
 }

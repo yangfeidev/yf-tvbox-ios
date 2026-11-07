@@ -16,7 +16,7 @@ struct LiveView: View {
     @State private var loading = false
     @State private var errorText: String?
     @State private var session: PlaybackSession?
-    @State private var loaded = false
+    @State private var loadGeneration = 0
 
     private var currentGroup: ChannelGroup? {
         groups.first { $0.name == selectedGroup } ?? groups.first
@@ -69,9 +69,9 @@ struct LiveView: View {
                 .disabled(loading)
             }
         }
-        .task {
-            guard !loaded else { return }
-            loaded = true
+        .task(id: app.settings.liveUrl) {
+            groups = []
+            selectedGroup = ""
             await load()
         }
         .fullScreenCover(item: $session) { session in
@@ -121,16 +121,18 @@ struct LiveView: View {
     }
 
     private func load(force: Bool = false) async {
-        guard !loading else { return }
+        loadGeneration += 1
+        let generation = loadGeneration
         loading = true
         errorText = nil
-        defer { loading = false }
+        defer { if generation == loadGeneration { loading = false } }
         do {
             let result = try await app.loadLive(forceRefresh: force)
+            guard generation == loadGeneration, !Task.isCancelled else { return }
             groups = result
             if selectedGroup.isEmpty { selectedGroup = result.first?.name ?? "" }
         } catch {
-            guard !Http.isCancellation(error) else { return }
+            guard generation == loadGeneration, !Http.isCancellation(error) else { return }
             errorText = (error as? SourceError)?.message ?? error.localizedDescription
         }
     }

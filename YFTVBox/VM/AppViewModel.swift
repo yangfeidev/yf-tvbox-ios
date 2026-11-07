@@ -188,6 +188,8 @@ final class AppViewModel {
         store.saveSubscriptions(next)
 
         guard settings.activeSubscriptionId == id || next.isEmpty else { return }
+        document = nil
+        currentSite = nil
 
         if let first = next.first {
             activateLocally(first.id)
@@ -197,6 +199,7 @@ final class AppViewModel {
             }
             Task { await refreshSubscription(id: first.id) }
         } else {
+            settings.autoAddDefault = false
             activateLocally("")
             document = nil
             currentSite = nil
@@ -210,6 +213,7 @@ final class AppViewModel {
         currentSite = nil
 
         Task {
+            guard settings.activeSubscriptionId == id else { return }
             if let raw = store.readSubscriptionCache(id),
                let cached = try? SubscriptionApi.parse(raw) {
                 applyDocument(cached)
@@ -233,12 +237,20 @@ final class AppViewModel {
             error = nil
         }
 
+        defer {
+            if !silent, refreshingSubscriptionId == active.id {
+                loading = false
+                refreshingSubscriptionId = nil
+            }
+        }
+
         do {
             let raw = try await SubscriptionApi.fetchRaw(active.url)
             let document = try SubscriptionApi.parse(raw)
             if document.isWarehouse {
                 throw SourceError("该地址已变成多仓订阅，请重新添加子仓库")
             }
+            guard subscriptions.contains(where: { $0.id == active.id }) else { return }
             store.writeSubscriptionCache(active.id, raw: raw)
 
             let now = Int64(Date().timeIntervalSince1970)
@@ -254,15 +266,9 @@ final class AppViewModel {
             if settings.activeSubscriptionId == active.id {
                 applyDocument(document)
             }
-            if !silent {
-                loading = false
-                refreshingSubscriptionId = nil
-            }
         } catch {
             guard !Http.isCancellation(error) else { return }
             if !silent {
-                loading = false
-                refreshingSubscriptionId = nil
                 self.error = (error as? SourceError)?.message ?? error.localizedDescription
             }
         }
@@ -396,6 +402,11 @@ final class AppViewModel {
 
     func historyEntry(siteKey: String, mediaId: String) -> LibraryEntry? {
         history.first { $0.uniqueKey == "\(siteKey)::\(mediaId)" }
+    }
+
+    func removeFavorite(_ entry: LibraryEntry) {
+        favorites.removeAll { $0.uniqueKey == entry.uniqueKey }
+        store.saveFavorites(favorites)
     }
 
     func removeHistory(_ entry: LibraryEntry) {

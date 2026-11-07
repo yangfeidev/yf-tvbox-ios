@@ -223,7 +223,7 @@ enum VodApi {
         } else if poster.hasPrefix("//") {
             copy.poster = "https:" + poster
         } else if let base = URL(string: site.api) {
-            copy.poster = URL(string: poster, relativeTo: base.deletingLastPathComponent())?.absoluteString ?? poster
+            copy.poster = URL(string: poster, relativeTo: base)?.absoluteString ?? poster
         }
         return copy
     }

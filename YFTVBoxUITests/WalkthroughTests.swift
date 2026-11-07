@@ -51,22 +51,45 @@ final class WalkthroughTests: XCTestCase {
 
         // 4. 直播
         tapTab(1)
+        XCTAssertTrue(app.buttons["全部"].waitForExistence(timeout: 15))
+        snapshot("04-category")
+        let categoryTab = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "category-tab-")).firstMatch
+        if categoryTab.waitForExistence(timeout: 15) {
+            let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))
+            let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5))
+            from.press(forDuration: 0.05, thenDragTo: to)
+            let selected = NSPredicate(format: "value == %@", "已选择")
+            expectation(for: selected, evaluatedWith: categoryTab)
+            waitForExpectations(timeout: 10)
+        }
+        tapTab(2)
         sleep(12)
         snapshot("04-live")
 
         // 5. 搜索（空态 + 搜索历史）
-        tapTab(2)
+        tapTab(0)
+        let search = app.buttons["首页搜索"]
+        XCTAssertTrue(search.waitForExistence(timeout: 10))
+        search.tap()
         sleep(2)
         snapshot("05-search")
+        goBack()
 
         // 6. 我的
         tapTab(3)
         sleep(2)
+        snapshot("06-library")
+        tapTab(4)
+        sleep(2)
         snapshot("06-settings")
 
-        // 7. 订阅管理
-        app.buttons["settings-subscriptions"].firstMatch.tap()
-        sleep(2)
+        // 7. 设置页直接提供订阅和站点操作
+        XCTAssertTrue(app.textFields["settings-subscription-url"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["settings-add-subscription"].exists)
+        XCTAssertTrue(app.buttons["多仓 /dc"].exists)
+        app.buttons["多仓 /dc"].tap()
+        XCTAssertEqual(app.textFields["settings-subscription-url"].value as? String, "https://tv.bsdnme.me/dc")
+        app.buttons["单仓 /box"].tap()
         snapshot("07-subscriptions")
     }
 

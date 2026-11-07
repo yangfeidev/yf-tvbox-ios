@@ -1,12 +1,6 @@
 import SwiftUI
 
-/**
- 首页。
-
- 数据来源：当前站点的分类表 + 前几个分类的第一页内容。
- 分类请求和列表请求分开打（`ac=list` 才带分类表），
- 拿到分类后并发拉前 6 个分类，拼成"焦点 + 横轨"的结构。
- */
+/// 最新上线、继续观看和分类横轨，对应 Android 首页。
 struct HomeView: View {
 
     @Environment(AppViewModel.self) private var app
@@ -14,10 +8,13 @@ struct HomeView: View {
 
     @State private var categories: [Category] = []
     @State private var rails: [HomeRail] = []
+    @State private var latest: [MediaItem] = []
     @State private var featured: MediaItem?
+    @State private var historyItem: MediaItem?
     @State private var loading = false
     @State private var errorText: String?
     @State private var loadedSiteKey = ""
+    @State private var loadGeneration = 0
 
     var body: some View {
         Group {
@@ -30,16 +27,15 @@ struct HomeView: View {
             }
         }
         .background(XColors.background)
-        .navigationTitle(navigationTitle)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar { toolbarContent }
+        .toolbar(.hidden, for: .navigationBar)
         .navigationDestination(for: MediaItem.self) { item in
             DetailView(item: item)
         }
         .navigationDestination(for: Category.self) { category in
             CategoryView(category: category)
         }
-        .task(id: app.currentSite?.key) { await load() }
+        .navigationDestination(item: $historyItem) { DetailView(item: $0, autoResume: true) }
+        .task(id: app.currentSite) { await load() }
     }
 
     /// 标题固定用应用名：用站点名会让返回按钮变成"烂大街!"这种源站标题
@@ -57,34 +53,64 @@ struct HomeView: View {
                     .padding(.horizontal, XSpacing.lg)
                 }
 
-                if !categories.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: XSpacing.sm) {
-                            ForEach(categories) { category in
-                                NavigationLink(value: category) {
-                                    Text(category.name)
-                                        .font(XFont.bodySmall())
-                                        .foregroundStyle(XColors.textSecondary)
-                                        .padding(.horizontal, XSpacing.md)
-                                        .padding(.vertical, 7)
-                                        .background(XColors.surfaceRaised, in: Capsule())
+                if let site = app.currentSite {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 10) {
+                                Image("AndroidBrand").resizable().frame(width: 34, height: 34).clipShape(RoundedRectangle(cornerRadius: 8))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("飞哥影视仓").font(XFont.title()).foregroundStyle(XColors.textPrimary)
+                                    (Text("由 ").foregroundColor(XColors.textSecondary) + Text("巴萨的内马尔").foregroundColor(XColors.accent) + Text(" 打造").foregroundColor(XColors.textSecondary)).font(XFont.caption())
                                 }
-                                .buttonStyle(.plain)
                             }
+                            Text("当前片源 · \(site.name)").font(XFont.caption()).foregroundStyle(XColors.textSecondary)
                         }
-                        .padding(.horizontal, XSpacing.lg)
-                        .padding(.trailing, XSpacing.lg)
-                    }
+                        Spacer()
+                        Button { Task { await load(force: true) } } label: { homeAction("arrow.clockwise") }
+                        NavigationLink { SearchView() } label: { homeAction("magnifyingglass") }.accessibilityLabel("首页搜索")
+                        NavigationLink { SettingsView(showsNavigationBar: true) } label: { homeAction("slider.horizontal.3") }
+                    }.padding(.horizontal, XSpacing.lg)
                 }
 
                 if let featured {
-                    SectionHeader(title: "焦点推荐")
-                        .padding(.horizontal, XSpacing.lg)
                     NavigationLink(value: featured) {
-                        FeaturedCard(item: featured)
+                        FeaturedCard(item: featured).padding(.horizontal, XSpacing.lg)
+                    }.buttonStyle(.plain)
+                }
+
+                let history = Array(app.history.filter { entry in app.usableSites.contains { $0.key == entry.siteKey } }.prefix(10))
+                if !history.isEmpty {
+                    VStack(alignment: .leading, spacing: XSpacing.md) {
+                        Text("继续观看").font(XFont.section()).foregroundStyle(XColors.textPrimary)
                             .padding(.horizontal, XSpacing.lg)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(alignment: .top, spacing: 12) {
+                                ForEach(history) { entry in
+                                    Button {
+                                        if let site = app.usableSites.first(where: { $0.key == entry.siteKey }) {
+                                            if site.key != app.currentSite?.key { app.selectSite(site) }
+                                            historyItem = entry.toMediaItem()
+                                        }
+                                    } label: {
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            PosterGridCell(item: entry.toMediaItem()).frame(width: cardWidth)
+                                            if let site = app.usableSites.first(where: { $0.key == entry.siteKey }) {
+                                                Text("片源 · \(site.name)").font(XFont.caption()).foregroundStyle(XColors.textSecondary).lineLimit(1)
+                                            }
+                                        }.frame(width: cardWidth)
+                                    }.buttonStyle(.plain)
+                                }
+                            }.padding(.horizontal, XSpacing.lg)
+                        }
                     }
-                    .buttonStyle(.plain)
+                }
+
+                if !latest.isEmpty {
+                    VStack(alignment: .leading, spacing: XSpacing.md) {
+                        Text("最近更新").font(XFont.section()).foregroundStyle(XColors.textPrimary)
+                            .padding(.horizontal, XSpacing.lg)
+                        PosterRail(items: latest, cardWidth: cardWidth)
+                    }
                 }
 
                 ForEach(rails) { rail in
@@ -111,7 +137,7 @@ struct HomeView: View {
                         .frame(height: 120)
                 }
 
-                if !loading, rails.isEmpty, errorText == nil {
+                if !loading, latest.isEmpty, rails.isEmpty, errorText == nil {
                     EmptyBlock(
                         icon: "film",
                         title: "这个源暂时没有内容",
@@ -124,6 +150,11 @@ struct HomeView: View {
             .frame(maxWidth: .infinity)
         }
         .refreshable { await load(force: true) }
+    }
+
+    private func homeAction(_ symbol: String) -> some View {
+        Image(systemName: symbol).font(.system(size: 17)).foregroundStyle(XColors.textSecondary)
+            .frame(width: 40, height: 40).background(XColors.surface, in: RoundedRectangle(cornerRadius: 12))
     }
 
     private var cardWidth: CGFloat {
@@ -152,7 +183,7 @@ struct HomeView: View {
                     Text("还没有订阅")
                         .font(XFont.section())
                         .foregroundStyle(XColors.textPrimary)
-                    Text("本应用不内置任何内容源。添加你自己的订阅地址后即可浏览。")
+                    Text("添加订阅地址，或使用默认订阅地址后即可浏览。")
                         .font(XFont.body())
                         .foregroundStyle(XColors.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -227,19 +258,31 @@ struct HomeView: View {
     // MARK: - 加载
 
     private func load(force: Bool = false) async {
-        guard let site = app.currentSite else { return }
-        if !force, loadedSiteKey == site.key, !rails.isEmpty { return }
+        loadGeneration += 1
+        let generation = loadGeneration
+        guard let site = app.currentSite else {
+            categories = []; rails = []; latest = []; featured = nil; loadedSiteKey = ""; loading = false
+            return
+        }
+        let siteIdentity = "\(app.settings.activeSubscriptionId)::\(site.key)::\(site.api)"
+        if !force, loadedSiteKey == siteIdentity, !rails.isEmpty { return }
+        if loadedSiteKey != siteIdentity { categories = []; rails = []; latest = []; featured = nil }
 
         loading = true
         errorText = nil
-        defer { loading = false }
+        defer { if generation == loadGeneration { loading = false } }
 
         do {
-            let allCategories = try await VodApi.categories(site: site)
+            let latestPage = try await VodApi.list(site: site)
+            guard generation == loadGeneration, !Task.isCancelled else { return }
+            latest = latestPage.items
+            featured = latest.first
+            let allCategories = (try? await VodApi.categories(site: site)) ?? []
+            guard generation == loadGeneration, !Task.isCancelled else { return }
             categories = Array(allCategories.prefix(12))
 
-            let picked = Array(allCategories.filter { $0.parentId.isEmpty || $0.parentId == "0" }.prefix(6))
-            let targets = picked.isEmpty ? Array(allCategories.prefix(6)) : picked
+            let picked = Array(allCategories.filter { $0.parentId.isEmpty || $0.parentId == "0" }.prefix(4))
+            let targets = picked.isEmpty ? Array(allCategories.prefix(4)) : picked
 
             // 非 throwing：某个分类挂了只让那一条横轨空着，不能让整页变成错误页
             let results = await withTaskGroup(of: (Int, [MediaItem]).self) { group in
@@ -271,14 +314,16 @@ struct HomeView: View {
                 return buffer
             }
 
+            guard generation == loadGeneration, !Task.isCancelled else { return }
             rails = targets.enumerated().compactMap { index, category in
                 guard let items = results[index], !items.isEmpty else { return nil }
                 return HomeRail(category: category, items: items)
             }
-            featured = rails.first?.items.first
-            loadedSiteKey = site.key
+            if latest.isEmpty { latest = rails.first?.items ?? [] }
+            featured = latest.first
+            loadedSiteKey = siteIdentity
         } catch {
-            guard !Http.isCancellation(error) else { return }
+            guard generation == loadGeneration, !Http.isCancellation(error) else { return }
             errorText = (error as? SourceError)?.message ?? error.localizedDescription
         }
     }
@@ -292,57 +337,21 @@ private struct HomeRail: Identifiable {
 
 private struct FeaturedCard: View {
     let item: MediaItem
-
     var body: some View {
-        HStack(alignment: .top, spacing: XSpacing.md) {
-            RemoteImage(url: item.poster)
-                .frame(width: 104, height: 156)
-                .clipShape(RoundedRectangle(cornerRadius: XRadii.md, style: .continuous))
-
-            VStack(alignment: .leading, spacing: XSpacing.sm) {
-                Text(item.name)
-                    .font(XFont.headline())
-                    .foregroundStyle(XColors.textPrimary)
-                    .lineLimit(2)
-
-                let meta = [item.year, item.area, item.categoryName]
-                    .filter { !$0.isEmpty }
-                    .joined(separator: " · ")
-                if !meta.isEmpty {
-                    Text(meta)
-                        .font(XFont.caption())
-                        .foregroundStyle(XColors.textSecondary)
-                }
-
-                if !item.remarks.isEmpty {
-                    Text(item.remarks)
-                        .font(XFont.caption())
-                        .foregroundStyle(XColors.accent)
-                        .lineLimit(2)
-                }
-
-                Spacer(minLength: 0)
-
-                HStack(spacing: 6) {
-                    Image(systemName: "play.fill")
-                        .font(.system(size: 11, weight: .bold))
-                    Text("查看详情")
-                        .font(XFont.caption())
-                }
-                .foregroundStyle(XColors.onAccent)
-                .padding(.horizontal, XSpacing.md)
-                .padding(.vertical, 7)
-                .background(XColors.accent, in: Capsule())
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(XSpacing.md)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(XColors.surface, in: RoundedRectangle(cornerRadius: XRadii.lg, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: XRadii.lg, style: .continuous)
-                .stroke(XColors.divider, lineWidth: 0.5)
-        )
+        ZStack(alignment: .bottomLeading) {
+            RemoteImage(url: item.poster).frame(maxWidth: .infinity).frame(height: 204).clipped()
+            LinearGradient(colors: [XColors.background.opacity(0.2), XColors.background.opacity(0.55), XColors.background.opacity(0.95)], startPoint: .top, endPoint: .bottom)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("最新上线").font(XFont.caption()).foregroundStyle(XColors.accent)
+                    .padding(.horizontal, 10).padding(.vertical, 4).background(XColors.background.opacity(0.65), in: Capsule())
+                Text(item.name).font(XFont.headline()).foregroundStyle(XColors.textPrimary).lineLimit(2)
+                let meta = [item.year, item.area, item.categoryName, item.remarks].filter { !$0.isEmpty }.joined(separator: " · ")
+                if !meta.isEmpty { Text(meta).font(XFont.bodySmall()).foregroundStyle(XColors.textSecondary).lineLimit(1) }
+                HStack(spacing: 10) {
+                    Text("立即播放").foregroundStyle(XColors.onAccent).padding(.horizontal, 22).padding(.vertical, 10).background(XColors.accent, in: Capsule())
+                    Text("详情").foregroundStyle(XColors.textPrimary).padding(.horizontal, 20).padding(.vertical, 10).background(XColors.surfaceRaised, in: Capsule())
+                }.font(XFont.bodySmall()).padding(.top, 8)
+            }.padding(20)
+        }.frame(height: 204).clipShape(RoundedRectangle(cornerRadius: XRadii.lg))
     }
 }

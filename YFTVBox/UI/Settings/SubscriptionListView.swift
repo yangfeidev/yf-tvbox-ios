@@ -47,15 +47,14 @@ struct SubscriptionListView: View {
                 .buttonStyle(.plain)
             }
             .onDelete { indexSet in
-                for index in indexSet {
-                    app.removeSubscription(app.subscriptions[index].id)
-                }
+                let ids = indexSet.map { app.subscriptions[$0].id }
+                for id in ids { app.removeSubscription(id) }
             }
         }
         .listStyle(.insetGrouped)
         .safeAreaInset(edge: .bottom) {
             if !app.subscriptions.isEmpty {
-                Text("点按切换当前订阅，左滑删除。切换后会先用本地缓存顶起界面，再后台刷新。")
+                Text("点按切换当前订阅，左滑删除。切换后会优先使用本地缓存。")
                     .font(XFont.caption())
                     .foregroundStyle(XColors.textTertiary)
                     .multilineTextAlignment(.center)

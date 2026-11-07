@@ -25,7 +25,7 @@ struct UpdateInfo: Decodable, Identifiable {
     var id: String { "\(version)-\(build)" }
 
     var isMandatory: Bool {
-        force == true
+        force == true || (minBuild.map { UpdateApi.currentBuild < $0 } ?? false)
     }
 }
 
