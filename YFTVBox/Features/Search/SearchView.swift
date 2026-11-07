@@ -17,6 +17,7 @@ struct SearchView: View {
     @State private var errorText: String?
     @State private var hasSearched = false
     @State private var searchGeneration = 0
+    @State private var didFocusOnEntry = false
     @FocusState private var focused: Bool
 
     private var columns: [GridItem] {
@@ -59,6 +60,14 @@ struct SearchView: View {
         .background(XColors.background)
         .navigationTitle("搜索")
         .navigationBarTitleDisplayMode(.inline)
+        .task {
+            guard !didFocusOnEntry else { return }
+            // 等导航转场完成后再请求焦点，避免键盘被转场吞掉。
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            didFocusOnEntry = true
+            focused = true
+        }
         .onChange(of: app.currentSite) { _, _ in
             searchGeneration += 1
             loading = false
@@ -81,6 +90,7 @@ struct SearchView: View {
                     .font(XFont.body())
                     .foregroundStyle(XColors.textPrimary)
                     .focused($focused)
+                    .accessibilityIdentifier("search-query")
                     .submitLabel(.search)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
@@ -176,7 +186,7 @@ private struct FlowChips: View {
     let onTap: (String) -> Void
 
     var body: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 72), alignment: .leading)], alignment: .leading, spacing: XSpacing.sm) {
+        SearchHistoryLayout(spacing: XSpacing.sm) {
             ForEach(items, id: \.self) { item in
                 Button {
                     onTap(item)
@@ -184,7 +194,8 @@ private struct FlowChips: View {
                     Text(item)
                         .font(XFont.bodySmall())
                         .foregroundStyle(XColors.textSecondary)
-                        .lineLimit(1)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.leading)
                         .padding(.horizontal, XSpacing.md)
                         .padding(.vertical, 7)
                         .background(XColors.surfaceRaised, in: Capsule())
@@ -192,5 +203,41 @@ private struct FlowChips: View {
                 .buttonStyle(.plain)
             }
         }
+    }
+}
+
+/// 按内容宽度排列，过长的关键词限制在可用宽度内并自动换行。
+private struct SearchHistoryLayout: Layout {
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        arrangement(subviews, width: proposal.width ?? .greatestFiniteMagnitude).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let layout = arrangement(subviews, width: bounds.width)
+        for (index, entry) in layout.entries.enumerated() {
+            subviews[index].place(at: CGPoint(x: bounds.minX + entry.origin.x, y: bounds.minY + entry.origin.y),
+                                  proposal: ProposedViewSize(width: entry.width, height: nil))
+        }
+    }
+
+    private func arrangement(_ subviews: Subviews, width: CGFloat) -> (size: CGSize, entries: [(origin: CGPoint, width: CGFloat)]) {
+        let availableWidth = max(0, width)
+        var entries: [(origin: CGPoint, width: CGFloat)] = []
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0, usedWidth: CGFloat = 0
+        for subview in subviews {
+            let idealWidth = subview.sizeThatFits(.unspecified).width
+            let itemWidth = min(idealWidth, availableWidth)
+            let size = subview.sizeThatFits(ProposedViewSize(width: itemWidth, height: nil))
+            if x > 0 && x + size.width > availableWidth {
+                x = 0; y += rowHeight + spacing; rowHeight = 0
+            }
+            entries.append((CGPoint(x: x, y: y), itemWidth))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+            usedWidth = max(usedWidth, x - spacing)
+        }
+        return (CGSize(width: usedWidth, height: y + rowHeight), entries)
     }
 }

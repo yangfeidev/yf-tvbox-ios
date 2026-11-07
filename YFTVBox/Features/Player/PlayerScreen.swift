@@ -99,6 +99,12 @@ struct PlayerScreen: View {
                 VStack {
                     topBar
                     Spacer()
+                    HStack {
+                        Spacer()
+                        orientationButton
+                    }
+                    .padding(.horizontal, XSpacing.lg)
+                    .padding(.bottom, XSpacing.lg)
                 }
             }
         }
@@ -204,19 +210,24 @@ struct PlayerScreen: View {
                 }
             }
             Spacer()
-            Button {
-                requestedLandscape.toggle()
-                requestOrientation(requestedLandscape ? .landscapeRight : .portrait)
-                revealControls()
-            } label: {
-                Label(requestedLandscape ? "竖屏" : "横屏", systemImage: "arrow.up.left.and.arrow.down.right")
-                    .font(XFont.bodySmall())
-                    .foregroundStyle(XColors.textPrimary)
-            }
-            .accessibilityIdentifier("player-orientation")
         }
         .padding(.horizontal, XSpacing.lg)
         .padding(.top, XSpacing.sm)
+    }
+
+    private var orientationButton: some View {
+        Button {
+            requestedLandscape.toggle()
+            requestOrientation(requestedLandscape ? .landscapeRight : .portrait)
+            revealControls()
+        } label: {
+            Label(requestedLandscape ? "竖屏" : "横屏", systemImage: "arrow.up.left.and.arrow.down.right")
+                .font(XFont.bodySmall())
+                .foregroundStyle(XColors.textPrimary)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .accessibilityIdentifier("player-orientation")
     }
 
     private var centerControls: some View {
@@ -327,7 +338,8 @@ struct PlayerScreen: View {
                         .foregroundStyle(XColors.textPrimary)
                 }
 
-                Spacer()
+                Spacer(minLength: XSpacing.sm)
+                orientationButton
             }
         }
         .padding(.horizontal, XSpacing.lg)

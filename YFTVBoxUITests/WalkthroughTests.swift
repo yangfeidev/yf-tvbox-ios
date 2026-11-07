@@ -21,6 +21,18 @@ final class WalkthroughTests: XCTestCase {
         app.launch()
     }
 
+    func testSearchAutomaticallyFocuses() throws {
+        tapTab(1)
+        let search = app.buttons["搜索"]
+        XCTAssertTrue(search.waitForExistence(timeout: 45))
+        search.tap()
+        let field = app.textFields["search-query"]
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10), "进入搜索页后键盘没有弹出")
+        field.typeText("test")
+        XCTAssertEqual(field.value as? String, "test")
+    }
+
     func testPlayerOrientationButton() throws {
         app.terminate()
         app.launchEnvironment["DEBUG_PLAY_URL"] = "http://127.0.0.1:9999/video.m3u8"
@@ -86,7 +98,8 @@ final class WalkthroughTests: XCTestCase {
         let search = app.buttons["首页搜索"]
         XCTAssertTrue(search.waitForExistence(timeout: 10))
         search.tap()
-        sleep(2)
+        XCTAssertTrue(app.textFields["search-query"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10), "进入搜索页后键盘没有弹出")
         snapshot("05-search")
         goBack()
 
