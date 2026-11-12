@@ -19,6 +19,7 @@ struct SettingsView: View {
     @State private var message: String?
     @State private var liveMessage: String?
     @State private var showClearConfirm = false
+    @AppStorage("pictureInPictureEnabled") private var pictureInPictureEnabled = true
 
     private var version: String {
         let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0"
@@ -104,6 +105,7 @@ struct SettingsView: View {
                     Text("订阅内包含 \(count) 个直播源，iOS 暂未接入").font(XFont.bodySmall()).foregroundStyle(XColors.textSecondary)
                 }
                 heading("偏好设置").padding(.top, 8)
+                preference("画中画", description: "播放时离开 App 可自动进入系统画中画，也可在播放器中手动开启", value: $pictureInPictureEnabled)
                 preference("启动时自动更新订阅", description: "每次打开 App 拉取一次最新配置", value: Binding(get: { app.settings.autoUpdateOnLaunch }, set: { app.setAutoUpdate($0) }))
                 preference("启动时检查更新", description: "启动时检查 iOS 版本", value: Binding(get: { app.settings.autoCheckUpdate }, set: { app.setAutoCheckUpdate($0) }))
                 heading("关于").padding(.top, 8)

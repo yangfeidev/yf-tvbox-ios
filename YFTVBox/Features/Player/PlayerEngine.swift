@@ -30,11 +30,16 @@ protocol PlayerEngine: AnyObject {
     func pause()
     func stop()
     func seek(to seconds: Double)
+    func currentPosition() -> Double?
     func setRate(_ rate: Float)
     func setAspectFill(_ fill: Bool)
     /// 返回可直接塞进 SwiftUI 的画面视图（AVPlayerLayer / VLC 的 video view）
     func makeSurface() -> UIView
     func invalidate()
+}
+
+extension PlayerEngine {
+    func currentPosition() -> Double? { nil }
 }
 
 /// 一次播放会话：点播的某一集，或一个直播频道。

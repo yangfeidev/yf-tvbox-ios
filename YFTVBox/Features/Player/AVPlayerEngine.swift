@@ -1,4 +1,5 @@
 import AVFoundation
+import AVKit
 import MediaPlayer
 import Observation
 import UIKit
@@ -24,6 +25,10 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     private var endObserver: NSObjectProtocol?
     private var pendingStart: Double = 0
     private var didApplyStart = false
+    private var pictureInPictureController: AVPictureInPictureController?
+    var onPictureInPictureChange: ((Bool) -> Void)?
+    var onPictureInPictureAvailability: ((Bool) -> Void)?
+    private var pipObservation: NSKeyValueObservation?
 
     override init() {
         super.init()
@@ -105,6 +110,11 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
     }
 
+    func currentPosition() -> Double? {
+        let time = player.currentTime().seconds
+        return time.isFinite && time >= 0 ? time : nil
+    }
+
     private var desiredRate: Float = 1
 
     func setRate(_ rate: Float) {
@@ -123,10 +133,32 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         view.playerLayer.videoGravity = .resizeAspect
         view.playerLayer.backgroundColor = UIColor.black.cgColor
         surface = view
+        if AVPictureInPictureController.isPictureInPictureSupported(),
+           let controller = AVPictureInPictureController(playerLayer: view.playerLayer) {
+            controller.delegate = self
+            controller.canStartPictureInPictureAutomaticallyFromInline = UserDefaults.standard.object(forKey: "pictureInPictureEnabled") as? Bool ?? true
+            pictureInPictureController = controller
+            pipObservation = controller.observe(\.isPictureInPicturePossible, options: [.initial, .new]) { [weak self] controller, _ in
+                Task { @MainActor in self?.onPictureInPictureAvailability?(controller.isPictureInPicturePossible) }
+            }
+        }
         return view
     }
 
+    func setPictureInPictureEnabled(_ enabled: Bool) {
+        pictureInPictureController?.canStartPictureInPictureAutomaticallyFromInline = enabled
+    }
+
+    func startPictureInPicture() {
+        guard let controller = pictureInPictureController, controller.isPictureInPicturePossible else { return }
+        controller.startPictureInPicture()
+    }
+
     func invalidate() {
+        pictureInPictureController?.stopPictureInPicture()
+        pictureInPictureController?.delegate = nil
+        pipObservation = nil
+        pictureInPictureController = nil
         if let timeObserver {
             player.removeTimeObserver(timeObserver)
             self.timeObserver = nil
@@ -183,6 +215,21 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     }
 }
 
+extension AVPlayerEngine: @preconcurrency AVPictureInPictureControllerDelegate {
+    func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+        onPictureInPictureChange?(true)
+    }
+
+    func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+        onPictureInPictureChange?(false)
+    }
+
+    func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController,
+                                    restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void) {
+        completionHandler(true)
+    }
+}
+
 /// 用 AVPlayerLayer 当 backing layer，省掉一层 UIView 嵌套。
 final class PlayerLayerView: UIView {
     override class var layerClass: AnyClass { AVPlayerLayer.self }
@@ -208,6 +255,8 @@ final class PlaybackModel {
     var duration: Double = 0
     var aspectFill = false
     var speed: Float = 1.0
+    var pictureInPictureActive = false
+    var pictureInPicturePossible = false
 
     var isPlaying: Bool { status == .playing }
     /// 直播与否由会话决定，不能看 duration：
@@ -226,6 +275,11 @@ final class PlaybackModel {
     @ObservationIgnored private var engine: PlayerEngine
     /// 等拿到真实时长后再按比例跳转，避免对直播（时长无穷）做无意义 seek
     @ObservationIgnored private var pendingFraction: Double?
+    @ObservationIgnored private var pendingSeekTarget: Double?
+    @ObservationIgnored private var restoringProgress = false
+    @ObservationIgnored private var hasPlaybackProgress = false
+    @ObservationIgnored private var playbackRequested = true
+    @ObservationIgnored private var suspendedForBackground = false
     @ObservationIgnored private var nowPlayingActive = false
     @ObservationIgnored private var sessionIsLive = false
     @ObservationIgnored private var watchdog: Task<Void, Never>?
@@ -235,6 +289,10 @@ final class PlaybackModel {
         // 而本类与引擎都是 @MainActor。这里在初始化体内构造，等价且不会报隔离错误。
         let resolved = engine ?? AVPlayerEngine()
         self.engine = resolved
+        if let player = resolved as? AVPlayerEngine {
+            player.onPictureInPictureChange = { [weak self] active in self?.pictureInPictureActive = active }
+            player.onPictureInPictureAvailability = { [weak self] possible in self?.pictureInPicturePossible = possible }
+        }
         resolved.onStatus = { [weak self] status in
             guard let self else { return }
             if case .failed = self.status { return }
@@ -245,14 +303,26 @@ final class PlaybackModel {
         }
         resolved.onProgress = { [weak self] time, duration in
             guard let self else { return }
-            self.currentTime = time
             self.duration = duration
+            if let fraction = self.pendingFraction, duration > 1 {
+                let target = duration * fraction
+                self.pendingFraction = nil
+                self.pendingSeekTarget = target
+                self.restoringProgress = true
+                self.currentTime = target
+                self.engine.seek(to: target)
+                return
+            }
+            if let target = self.pendingSeekTarget {
+                let tolerance = min(2, max(target / 2, 0.05))
+                guard abs(time - target) < tolerance else { return }
+                self.pendingSeekTarget = nil
+                self.restoringProgress = false
+            }
+            self.currentTime = time
+            if time > 0 { self.hasPlaybackProgress = true }
             // 只要有进度就说明已经出画面了，看门狗立即失效
             if time > 0.5 { self.cancelWatchdog() }
-            if let fraction = self.pendingFraction, duration > 1 {
-                self.pendingFraction = nil
-                self.engine.seek(to: duration * fraction)
-            }
             self.refreshNowPlayingTime()
         }
     }
@@ -261,6 +331,9 @@ final class PlaybackModel {
         cancelWatchdog()
         engine.stop()
         pendingFraction = nil
+        pendingSeekTarget = nil
+        restoringProgress = false
+        hasPlaybackProgress = false
         currentTime = 0
         duration = 0
         status = .buffering
@@ -291,7 +364,7 @@ final class PlaybackModel {
         currentTime = 0
         duration = 0
         status = .buffering
-        pendingFraction = (session.resumeFraction > 0.02 && session.resumeFraction < 0.98)
+        pendingFraction = (session.resumeFraction > 0 && session.resumeFraction < 0.98)
             ? session.resumeFraction
             : nil
 
@@ -300,8 +373,11 @@ final class PlaybackModel {
 
         engine.setRate(speed)
         engine.load(url: episode.url, headers: session.headers, startAt: 0)
-        engine.play()
-        startBufferingWatchdog()
+        if !suspendedForBackground {
+            playbackRequested = true
+            engine.play()
+            startBufferingWatchdog()
+        }
     }
 
     /**
@@ -328,18 +404,42 @@ final class PlaybackModel {
     }
 
     func togglePlay() {
-        if isPlaying { engine.pause() } else { engine.play() }
+        if isPlaying { pause() } else { play() }
     }
 
-    func play() { engine.play() }
+    func play() { playbackRequested = true; engine.play() }
 
-    func pause() { engine.pause() }
+    func pause() { playbackRequested = false; engine.pause() }
+
+    func suspendForBackground() {
+        guard !suspendedForBackground else { return }
+        suspendedForBackground = true
+        cancelWatchdog()
+        engine.pause()
+    }
+
+    func resumeFromBackground() {
+        guard suspendedForBackground else { return }
+        suspendedForBackground = false
+        if playbackRequested { engine.play() }
+    }
+
+    var progressForSaving: Float? {
+        guard pendingFraction == nil, !restoringProgress, hasPlaybackProgress, duration > 0 else { return nil }
+        let time = pendingSeekTarget ?? engine.currentPosition() ?? currentTime
+        guard time.isFinite else { return nil }
+        return Float(min(max(time / duration, 0), 1))
+    }
 
     func skip(_ delta: Double) {
         let target = currentTime + delta
         let clamped = max(0, duration > 0 ? min(target, duration - 1) : target)
         engine.seek(to: clamped)
         currentTime = clamped
+        pendingSeekTarget = clamped
+        restoringProgress = false
+        pendingFraction = nil
+        hasPlaybackProgress = true
     }
 
     func seek(toProgress value: Double) {
@@ -347,6 +447,10 @@ final class PlaybackModel {
         let target = duration * min(max(value, 0), 1)
         engine.seek(to: target)
         currentTime = target
+        pendingSeekTarget = target
+        restoringProgress = false
+        pendingFraction = nil
+        hasPlaybackProgress = true
     }
 
     func setSpeed(_ value: Float) {
@@ -362,6 +466,12 @@ final class PlaybackModel {
 
     func makeSurface() -> UIView { engine.makeSurface() }
 
+    func setPictureInPictureEnabled(_ enabled: Bool) {
+        (engine as? AVPlayerEngine)?.setPictureInPictureEnabled(enabled)
+    }
+
+    func startPictureInPicture() { (engine as? AVPlayerEngine)?.startPictureInPicture() }
+
     func invalidate() {
         cancelWatchdog()
         engine.invalidate()
@@ -372,7 +482,7 @@ final class PlaybackModel {
 
     /**
      视频 App 用 .playback：静音开关拨下也有声音，这是用户预期。
-     不申请后台播放（Info.plist 未开 audio），退到后台会自动暂停。
+     后台音频能力用于系统画中画。
      */
     private func activateAudioSession() {
         let session = AVAudioSession.sharedInstance()

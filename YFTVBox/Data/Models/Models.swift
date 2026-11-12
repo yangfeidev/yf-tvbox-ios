@@ -230,12 +230,12 @@ struct ResumeTarget {
  上次看到哪一集。
 
  优先按历史里记录过的线路名定位，找不到再跨线路按集名找。
- 进度 <2% 或 >98% 视为不需要续播（刚点开 / 已经看完）——
+ 进度为零或 >=98% 视为不需要续播（刚点开 / 已经看完）——
  阈值与播放页的应用条件保持一致，否则会出现"续播按钮在，但播放器不跳"。
  */
 func findResumeTarget(sources: [PlaySource], history: LibraryEntry?) -> ResumeTarget? {
     guard let history, !history.episodeName.isEmpty,
-          history.progress > 0.02, history.progress < 0.98 else { return nil }
+          history.progress > 0, history.progress < 0.98 else { return nil }
 
     if !history.sourceName.isEmpty,
        let sourceIndex = sources.firstIndex(where: { $0.name == history.sourceName }),

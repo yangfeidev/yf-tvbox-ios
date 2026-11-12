@@ -222,9 +222,11 @@ final class LiveAndSubscriptionTests: XCTestCase {
         noSource.sourceName = "已删除的线路"
         XCTAssertEqual(findResumeTarget(sources: sources, history: noSource)?.sourceIndex, 0)
 
-        // 进度太小或基本看完，视为不需要续播
+        // 很早的播放进度也可以续播；从头和基本看完不续播
         var tiny = history
         tiny.progress = 0.01
+        XCTAssertNotNil(findResumeTarget(sources: sources, history: tiny))
+        tiny.progress = 0
         XCTAssertNil(findResumeTarget(sources: sources, history: tiny))
 
         var done = history
@@ -242,11 +244,13 @@ private final class TestPlayerEngine: PlayerEngine {
     var onProgress: ((Double, Double) -> Void)?
     var loadedURLs: [String] = []
     var pauseCount = 0
+    var playCount = 0
+    var seekTargets: [Double] = []
     func load(url: String, headers: [String: String], startAt: Double) { loadedURLs.append(url) }
-    func play() {}
+    func play() { playCount += 1 }
     func pause() { pauseCount += 1 }
     func stop() { pauseCount += 1 }
-    func seek(to seconds: Double) {}
+    func seek(to seconds: Double) { seekTargets.append(seconds) }
     func setRate(_ rate: Float) {}
     func setAspectFill(_ fill: Bool) {}
     func makeSurface() -> UIView { UIView() }
@@ -254,6 +258,56 @@ private final class TestPlayerEngine: PlayerEngine {
 }
 
 final class PlaybackRegressionTests: XCTestCase {
+    @MainActor
+    func testBackgroundSuspensionPreservesPlaybackIntent() {
+        let engine = TestPlayerEngine()
+        let model = PlaybackModel(engine: engine)
+        model.play()
+        model.suspendForBackground()
+        model.resumeFromBackground()
+        XCTAssertEqual(engine.playCount, 2)
+        model.pause()
+        model.suspendForBackground()
+        model.resumeFromBackground()
+        XCTAssertEqual(engine.playCount, 2)
+        model.invalidate()
+    }
+
+    @MainActor
+    func testLoadingInBackgroundWaitsUntilForeground() {
+        let engine = TestPlayerEngine()
+        let model = PlaybackModel(engine: engine)
+        model.suspendForBackground()
+        let session = PlaybackSession(title: "测试", sources: [PlaySource(name: "线路", episodes: [
+            Episode(name: "1", url: "https://example.com/1.m3u8")
+        ])], sourceIndex: 0, episodeIndex: 0)
+        model.load(session: session)
+        XCTAssertEqual(engine.playCount, 0)
+        model.resumeFromBackground()
+        XCTAssertEqual(engine.playCount, 1)
+        model.invalidate()
+    }
+
+    @MainActor
+    func testResumeDoesNotOverwriteHistoryBeforeSeekCompletes() {
+        let engine = TestPlayerEngine()
+        let model = PlaybackModel(engine: engine)
+        let session = PlaybackSession(title: "测试", sources: [PlaySource(name: "线路", episodes: [
+            Episode(name: "1", url: "https://example.com/1.m3u8")
+        ])], sourceIndex: 0, episodeIndex: 0, resumeFraction: 0.001)
+        model.load(session: session)
+        engine.onProgress?(0, 1000)
+        XCTAssertEqual(engine.seekTargets.last, 1)
+        XCTAssertNil(model.progressForSaving)
+        engine.onProgress?(0, 1000)
+        XCTAssertNil(model.progressForSaving)
+        engine.onProgress?(1, 1000)
+        XCTAssertEqual(model.progressForSaving ?? -1, 0.001, accuracy: 0.0001)
+        model.seek(toProgress: 0)
+        XCTAssertEqual(model.progressForSaving, 0)
+        model.invalidate()
+    }
+
     func testSwitchSourceMatchesEpisodeAndStopsAfterEachSource() {
         let sources = [
             PlaySource(name: "一", episodes: [Episode(name: "第1集", url: "a"), Episode(name: "第2集", url: "b")]),
