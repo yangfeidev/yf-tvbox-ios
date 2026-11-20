@@ -50,7 +50,6 @@ targets:
         # 自签或 TestFlight 分发下这是必须的；上架时会被追问，属于产品形态问题而非代码问题。
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
-          NSAllowsArbitraryLoadsInWebContent: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: me.bsdnme.tvbox

@@ -1,5 +1,8 @@
 import Foundation
 import Observation
+import Network
+import CryptoKit
+import UIKit
 
 /// 添加订阅的结果，用于区分「成功 / 需要选子仓库 / 失败」
 enum AddResult {
@@ -23,6 +26,28 @@ final class AppViewModel {
     // MARK: 状态
 
     var settings = AppSettings()
+    var familyMode = true
+    let familyContent = FamilyContent()
+
+    var visibleHistory: [LibraryEntry] {
+        familyMode ? history.filter { entry in familyContent.libraryVisible(entry, site: usableSites.first { $0.key == entry.siteKey }) } : history
+    }
+    var visibleFavorites: [LibraryEntry] {
+        familyMode ? favorites.filter { entry in familyContent.libraryVisible(entry, site: usableSites.first { $0.key == entry.siteKey }) } : favorites
+    }
+    var contentAuthorized: Bool { store.contentAuthorized }
+
+    func setFamilyMode(_ enabled: Bool) {
+        guard enabled || store.contentAuthorized else { return }
+        store.familyMode = enabled
+        familyMode = enabled
+    }
+
+    func authorizeContent(_ code: String) -> String? {
+        if let error = store.authorizeContent(code) { return error }
+        setFamilyMode(false)
+        return nil
+    }
     var subscriptions: [Subscription] = []
     var document: SubscriptionDocument?
     var currentSite: Site?
@@ -34,6 +59,66 @@ final class AppViewModel {
     var history: [LibraryEntry] = []
     var pinnedSites: Set<String> = []
     var searchHistory: [String] = []
+    var checkingSources = false
+    var sourceCheckResults: [String: Bool] = [:]
+    var sourceCheckCompleted = 0
+    var sourceCheckStale = false
+    var sourceCheckMessage: String?
+    var sourceCheckUpdateReady = false
+    var showAllSources = false
+    private var settingsVisible = false
+    private var pendingSourceSnapshot: SourceCheckSnapshot?
+    private var displayedSourceSnapshot: SourceCheckSnapshot?
+    private var sourceCheckTask: Task<Void, Never>?
+    private var sourceCheckGeneration = 0
+    private var networkKey = UUID().uuidString
+    private var networkOnline = false
+    private var appForeground = true
+    @ObservationIgnored private let networkMonitor = NWPathMonitor()
+    @ObservationIgnored private let networkQueue = DispatchQueue(label: "feige.source-network")
+
+    var displayedSites: [Site] {
+        guard !showAllSources, displayedSourceSnapshot != nil else { return usableSites }
+        return usableSites.filter { sourceCheckResults[$0.key] == true || $0.key == currentSite?.key }
+    }
+
+    private func sourceIdentity(_ site: Site) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = (try? encoder.encode(site)) ?? Data()
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    func setSourceSettingsVisible(_ visible: Bool) {
+        settingsVisible = visible
+        if !visible { applySourceCheckUpdate() }
+    }
+
+    func setForeground(_ active: Bool) {
+        appForeground = active
+        if active { startSourceChecks() }
+        else { sourceCheckGeneration += 1; sourceCheckTask?.cancel(); checkingSources = false }
+    }
+
+    private func startNetworkMonitor() {
+        networkMonitor.pathUpdateHandler = { [weak self] path in
+            let online = path.status == .satisfied
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.networkKey = UUID().uuidString
+                self.networkOnline = online
+                self.sourceCheckGeneration += 1
+                self.sourceCheckTask?.cancel()
+                self.checkingSources = false
+                self.pendingSourceSnapshot = nil
+                self.sourceCheckUpdateReady = false
+                self.sourceCheckStale = self.displayedSourceSnapshot != nil
+                self.sourceCheckMessage = online ? nil : "当前网络不可用，保留上次检测结果"
+                if online { self.startSourceChecks() }
+            }
+        }
+        networkMonitor.start(queue: networkQueue)
+    }
 
     /// 检查更新：有新版时由根视图统一弹窗，手动检查的结果用 updateMessage 提示
     var pendingUpdate: UpdateInfo?
@@ -67,6 +152,11 @@ final class AppViewModel {
         }
         #endif
 
+        familyMode = store.familyMode
+        startNetworkMonitor()
+        #if !DEBUG
+        Task { await reportInstallation() }
+        #endif
         settings = store.loadSettings()
         subscriptions = store.loadSubscriptions()
         favorites = store.loadFavorites()
@@ -89,12 +179,12 @@ final class AppViewModel {
                 applyDocument(cached)
             }
             initializing = false
-            if settings.autoUpdateOnLaunch {
+            if settings.autoUpdateOnLaunch || active.url == DefaultSources.legacyBox {
                 await refreshSubscription(id: active.id, silent: true)
             }
         } else if settings.autoAddDefault {
             // 没有任何订阅时静默导入内置单仓；失败不打扰用户，设置页会显示错误
-            _ = await addSubscription(DefaultSources.box, name: "默认单仓")
+            _ = await addSubscription(DefaultSources.box, name: "默认影视源")
             initializing = false
         } else {
             initializing = false
@@ -103,6 +193,25 @@ final class AppViewModel {
         if settings.autoCheckUpdate {
             Task { await checkUpdate() }
         }
+    }
+
+    /// Installation reporting mirrors Android; an installation ID is excluded from backups.
+    private func reportInstallation() async {
+        guard let id = store.installationID(),
+              let url = URL(string: "https://analytics.bsdnme.me/v1/installations") else { return }
+        let device = UIDevice.current
+        let payload: [String: String] = [
+            "id": id, "manufacturer": "Apple", "model": device.model,
+            "deviceType": device.userInterfaceIdiom == .pad ? "tablet" : "phone",
+            "appVersion": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+        ]
+        guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 10
+        request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        _ = try? await URLSession.shared.data(for: request)
     }
 
     // MARK: - 检查更新
@@ -141,6 +250,10 @@ final class AppViewModel {
         let url = SubscriptionApi.normalizeURL(rawURL)
         guard !url.isEmpty else { return .failure("请输入订阅地址") }
 
+        if let existing = subscriptions.first(where: { $0.url == url }) {
+            activateSubscription(existing.id)
+            return .success
+        }
         // 同一地址并发添加只跑一次，避免重复请求与重复入库
         if let pending = pendingAdds[url] { return await pending.value }
         let task = Task { await performAdd(url, name: name) }
@@ -225,7 +338,8 @@ final class AppViewModel {
             if let raw = store.readSubscriptionCache(id),
                let cached = try? SubscriptionApi.parse(raw) {
                 applyDocument(cached)
-            } else {
+            }
+            if self.document == nil || self.subscriptions.first(where: { $0.id == id })?.url == DefaultSources.legacyBox {
                 await refreshSubscription(id: id)
             }
         }
@@ -253,18 +367,28 @@ final class AppViewModel {
         }
 
         do {
-            let raw = try await SubscriptionApi.fetchRaw(active.url)
-            let document = try SubscriptionApi.parse(raw)
+            let targetURL = active.url == DefaultSources.legacyBox ? DefaultSources.box : active.url
+            var raw = try await SubscriptionApi.fetchRaw(targetURL)
+            var document = try SubscriptionApi.parse(raw)
             if document.isWarehouse {
                 throw SourceError("该地址已变成多仓订阅，请重新添加子仓库")
             }
-            guard subscriptions.contains(where: { $0.id == active.id }) else { return }
+            guard subscriptions.contains(where: { $0.id == active.id && $0.url == active.url }) else { return }
+            if targetURL == DefaultSources.box {
+                let previous = store.readSubscriptionCache(active.id).flatMap { try? SubscriptionApi.parse($0) }
+                var keys = store.loadSourceKeys(active.id)
+                raw = try SubscriptionApi.preservingSourceKeys(raw, previous: previous, keys: &keys)
+                document = try SubscriptionApi.parse(raw)
+                store.saveSourceKeys(keys, id: active.id)
+            }
             store.writeSubscriptionCache(active.id, raw: raw)
 
             let now = Int64(Date().timeIntervalSince1970)
             subscriptions = subscriptions.map { sub in
                 guard sub.id == active.id else { return sub }
                 var copy = sub
+                copy.url = targetURL
+                if sub.url == DefaultSources.legacyBox && sub.name == "默认单仓" { copy.name = "默认影视源" }
                 copy.updatedAt = now
                 copy.siteCount = document.sites.count
                 return copy
@@ -283,6 +407,13 @@ final class AppViewModel {
     }
 
     private func applyDocument(_ document: SubscriptionDocument) {
+        sourceCheckGeneration += 1
+        sourceCheckTask?.cancel()
+        checkingSources = false
+        pendingSourceSnapshot = nil
+        sourceCheckUpdateReady = false
+        displayedSourceSnapshot = nil
+        sourceCheckResults = [:]
         let usable = document.usableSites
         let savedKey = settings.currentSiteKey
         let site = usable.first { $0.key == savedKey } ?? usable.first
@@ -292,6 +423,83 @@ final class AppViewModel {
         currentSite = site
         settings.currentSiteKey = site?.key ?? ""
         store.saveSettings(settings)
+        let snapshots = store.loadSourceSnapshots(settings.activeSubscriptionId)
+        if let previous = snapshots.first(where: { $0.network == networkKey }) ?? snapshots.max(by: { $0.checkedAt < $1.checkedAt }) {
+            applySourceSnapshot(previous)
+        }
+        startSourceChecks()
+    }
+
+    private func applySourceSnapshot(_ snapshot: SourceCheckSnapshot) {
+        displayedSourceSnapshot = snapshot
+        pendingSourceSnapshot = nil
+        sourceCheckUpdateReady = false
+        sourceCheckResults = usableSites.reduce(into: [:]) { results, site in
+            if let entry = snapshot.entries[sourceIdentity(site)] { results[site.key] = entry.available }
+        }
+        let identities = Set(usableSites.map(sourceIdentity))
+        sourceCheckStale = snapshot.network != networkKey || !snapshot.isFresh()
+            || !identities.isSubset(of: Set(snapshot.entries.keys))
+    }
+
+    func applySourceCheckUpdate() {
+        guard let snapshot = pendingSourceSnapshot, snapshot.network == networkKey else { return }
+        applySourceSnapshot(snapshot)
+    }
+
+    func checkSources() async { startSourceChecks(force: true) }
+
+    private func startSourceChecks(force: Bool = false) {
+        let sites = usableSites
+        let subscriptionId = settings.activeSubscriptionId
+        guard appForeground, networkOnline, !subscriptionId.isEmpty, !sites.isEmpty else { return }
+        let ids = Set(sites.map(sourceIdentity))
+        let previous = store.loadSourceSnapshots(subscriptionId).first { $0.network == networkKey }
+        if !force, let previous, previous.isFresh(), ids.isSubset(of: Set(previous.entries.keys)) { return }
+        sourceCheckGeneration += 1
+        let generation = sourceCheckGeneration
+        let network = networkKey
+        sourceCheckTask?.cancel()
+        checkingSources = true
+        sourceCheckCompleted = 0
+        sourceCheckMessage = nil
+        sourceCheckTask = Task { [weak self] in
+            guard let self else { return }
+            var results: [String: Bool] = [:]
+            for start in stride(from: 0, to: sites.count, by: 6) {
+                let batch = sites[start..<min(start + 6, sites.count)]
+                let checked = await withTaskGroup(of: (Site, Bool).self) { group in
+                    for site in batch {
+                        group.addTask {
+                            do { return (site, !(try await VodApi.list(site: site, timeout: 8)).items.isEmpty) }
+                            catch { return (site, false) }
+                        }
+                    }
+                    var values: [(Site, Bool)] = []
+                    for await value in group { values.append(value) }
+                    return values
+                }
+                guard !Task.isCancelled, generation == self.sourceCheckGeneration,
+                      self.settings.activeSubscriptionId == subscriptionId, self.networkKey == network else { return }
+                for (site, available) in checked { results[self.sourceIdentity(site)] = available }
+                self.sourceCheckCompleted += checked.count
+            }
+            let hasSuccess = results.values.contains(true)
+            if !hasSuccess && (previous ?? self.displayedSourceSnapshot)?.entries.values.contains(where: { $0.available }) == true {
+                self.checkingSources = false
+                self.sourceCheckStale = true
+                self.sourceCheckMessage = "本轮未检测到可用源，保留上次结果"
+                return
+            }
+            let snapshot = SourceCheckSnapshot.merging(results, previous: previous, network: network)
+            self.store.saveSourceSnapshot(snapshot, id: subscriptionId)
+            self.checkingSources = false
+            self.sourceCheckMessage = hasSuccess ? nil : "本轮未检测到可用源，请检查网络或稍后重试"
+            if self.settingsVisible {
+                self.pendingSourceSnapshot = snapshot
+                self.sourceCheckUpdateReady = true
+            } else { self.applySourceSnapshot(snapshot) }
+        }
     }
 
     func selectSite(_ site: Site) {
@@ -377,6 +585,7 @@ final class AppViewModel {
                     name: item.name,
                     poster: item.poster,
                     remarks: item.remarks,
+                    typeId: item.typeId, categoryName: item.categoryName,
                     updatedAt: Int64(Date().timeIntervalSince1970)
                 ),
                 at: 0
@@ -399,6 +608,7 @@ final class AppViewModel {
             name: item.name,
             poster: item.poster,
             remarks: item.remarks,
+            typeId: item.typeId, categoryName: item.categoryName,
             episodeName: episodeName,
             sourceName: sourceName,
             progress: min(max(progress, 0), 1),

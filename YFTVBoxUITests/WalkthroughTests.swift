@@ -142,7 +142,7 @@ final class WalkthroughTests: XCTestCase {
         XCTAssertTrue(app.buttons["多仓 /dc"].exists)
         app.buttons["多仓 /dc"].tap()
         XCTAssertEqual(app.textFields["settings-subscription-url"].value as? String, "https://tv.bsdnme.me/dc")
-        app.buttons["单仓 /box"].tap()
+        app.buttons["影视源 /sources"].tap()
         snapshot("07-subscriptions")
     }
 

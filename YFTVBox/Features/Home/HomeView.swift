@@ -79,7 +79,7 @@ struct HomeView: View {
                     }.buttonStyle(.plain).accessibilityIdentifier("home-featured")
                 }
 
-                let history = Array(app.history.filter { entry in app.usableSites.contains { $0.key == entry.siteKey } }.prefix(10))
+                let history = Array(app.visibleHistory.filter { entry in app.usableSites.contains { $0.key == entry.siteKey } }.prefix(10))
                 if !history.isEmpty {
                     VStack(alignment: .leading, spacing: XSpacing.md) {
                         Text("继续观看").font(XFont.section()).foregroundStyle(XColors.textPrimary)
@@ -292,12 +292,14 @@ struct HomeView: View {
         errorText = nil
         defer { if generation == loadGeneration { loading = false } }
 
+        let family = app.familyMode
+        let content = app.familyContent
         do {
-            let latestPage = try await VodApi.list(site: site)
+            let latestPage = try await content.list(site: site, family: family)
             guard generation == loadGeneration, !Task.isCancelled else { return }
             latest = latestPage.items
             featured = latest.first
-            let allCategories = (try? await VodApi.categories(site: site)) ?? []
+            let allCategories = (try? await content.categories(site: site, family: family)) ?? []
             guard generation == loadGeneration, !Task.isCancelled else { return }
             categories = Array(allCategories.prefix(12))
 
@@ -309,18 +311,18 @@ struct HomeView: View {
                 for (index, category) in targets.enumerated() {
                     group.addTask {
                         // 请求失败就直接空着：再打一轮子分类只会把首屏拖得更慢
-                        guard let page = try? await VodApi.list(site: site, typeId: category.typeId, page: 1) else {
+                        guard let page = try? await content.list(site: site, typeId: category.typeId, page: 1, family: family) else {
                             return (index, nil)
                         }
                         if !page.items.isEmpty { return (index, page.items) }
 
                         // 成功但为空，才可能撞上"父分类没内容、视频挂子分类"，且只给前两条兜底
                         guard index < 2 else { return (index, []) }
-                        if let children = try? await VodApi.listChildren(
+                        if let children = try? await content.listChildren(
                             site: site,
                             parentId: category.typeId,
                             categories: allCategories,
-                            page: 1
+                            page: 1, family: family
                         ) {
                             return (index, children.items)
                         }
@@ -359,8 +361,10 @@ struct HomeView: View {
     private func retryRail(_ category: Category) async {
         guard let site = app.currentSite else { return }
         let generation = loadGeneration
+        let family = app.familyMode
+        let content = app.familyContent
         do {
-            let page = try await VodApi.list(site: site, typeId: category.typeId, page: 1)
+            let page = try await content.list(site: site, typeId: category.typeId, page: 1, family: family)
             guard generation == loadGeneration, !Task.isCancelled else { return }
             failedRails.removeAll { $0.id == category.id }
             if !page.items.isEmpty {

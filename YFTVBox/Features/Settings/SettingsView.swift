@@ -19,6 +19,9 @@ struct SettingsView: View {
     @State private var message: String?
     @State private var liveMessage: String?
     @State private var showClearConfirm = false
+    @State private var showAuthorization = false
+    @State private var authorizationCode = ""
+    @State private var authorizationError: String?
     @AppStorage("pictureInPictureEnabled") private var pictureInPictureEnabled = true
 
     private var version: String {
@@ -29,7 +32,7 @@ struct SettingsView: View {
 
     private var visibleSites: [Site] {
         let query = siteQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        return app.usableSites.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }
+        return app.displayedSites.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }
             .enumerated().sorted { left, right in
                 let a = app.isPinned(left.element), b = app.isPinned(right.element)
                 return a == b ? left.offset < right.offset : a && !b
@@ -46,14 +49,14 @@ struct SettingsView: View {
                 }
                 addCard
                 heading("已添加的订阅", subtitle: "共 \(app.subscriptions.count) 个")
-                if !app.subscriptions.contains(where: { $0.url == DefaultSources.box }) {
-                    Button { Task { await submit(DefaultSources.box, name: "默认单仓") } } label: {
+                if !app.subscriptions.contains(where: { $0.url == DefaultSources.box || $0.url == DefaultSources.legacyBox }) {
+                    Button { Task { await submit(DefaultSources.box, name: "默认影视源") } } label: {
                         Text(submitting ? "正在恢复默认订阅，可能需要几十秒" : "恢复默认订阅")
                             .font(XFont.title()).foregroundStyle(XColors.textPrimary)
                             .frame(maxWidth: .infinity).frame(height: 44)
                             .background(XColors.surfaceRaised, in: RoundedRectangle(cornerRadius: XRadii.md))
                     }.buttonStyle(.plain).disabled(submitting)
-                    Text("内置单仓（tv.bsdnme.me/box）不在列表里，点按钮一键恢复")
+                    Text("默认影视源（tv.bsdnme.me/sources）不在列表里，点按钮一键恢复")
                         .font(XFont.bodySmall()).foregroundStyle(XColors.textTertiary)
                 }
                 if let error = app.error { notice(error, danger: true) }
@@ -64,18 +67,33 @@ struct SettingsView: View {
                 }
                 heading("源站", subtitle: app.skippedSiteCount > 0 ? "\(app.skippedSiteCount) 个源在 iOS 上暂不支持" : "点击切换当前源")
                     .padding(.top, 8)
+                SettingsFlowLayout(spacing: 8) {
+                    pill(app.checkingSources ? "检测中 \(app.sourceCheckCompleted)/\(app.usableSites.count)" : "检测源站") {
+                        Task { await app.checkSources() }
+                    }.disabled(app.checkingSources || app.usableSites.isEmpty)
+                    if app.sourceCheckUpdateReady {
+                        pill("查看检测结果") { app.applySourceCheckUpdate() }
+                    }
+                    pill(app.showAllSources ? "只看可用" : "查看全部") { app.showAllSources.toggle() }
+                    if !app.sourceCheckResults.isEmpty {
+                        Text("可用 \(app.sourceCheckResults.values.filter { $0 }.count) / 已检测 \(app.sourceCheckResults.count)")
+                            .font(XFont.caption()).foregroundStyle(XColors.textSecondary)
+                    }
+                }
+                if app.sourceCheckStale { notice("显示上次检测结果，当前网络状态有待确认") }
+                if let message = app.sourceCheckMessage { notice(message) }
                 field("搜索源站名称", text: $siteQuery)
                     .accessibilityIdentifier("settings-site-search")
                 if visibleSites.isEmpty && !siteQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text("没有找到匹配的源站").font(XFont.bodySmall()).foregroundStyle(XColors.textSecondary)
-                } else if app.usableSites.isEmpty {
-                    notice("当前订阅没有支持的源站（type 0 / 1 / 4）")
+                } else if app.displayedSites.isEmpty {
+                    notice(app.usableSites.isEmpty ? "当前订阅没有支持的源站（type 0 / 1 / 4）" : "没有检测到可用源，可查看全部源")
                 } else {
                     ForEach(Array(visibleSites.chunked(into: 12).enumerated()), id: \.offset) { _, sites in
                         SettingsFlowLayout(spacing: 8) {
                             ForEach(sites) { site in
                                 HStack(spacing: 2) {
-                                    pill(site.name, selected: app.currentSite?.key == site.key) {
+                                    pill(site.name + (app.sourceCheckResults[site.key].map { $0 ? " ✓" : " ×" } ?? ""), selected: app.currentSite?.key == site.key) {
                                         if app.currentSite?.key != site.key {
                                             app.selectSite(site)
                                             onSiteChanged()
@@ -104,6 +122,15 @@ struct SettingsView: View {
                 if let count = app.document?.liveSources.count, count > 0 {
                     Text("订阅内包含 \(count) 个直播源，iOS 暂未接入").font(XFont.bodySmall()).foregroundStyle(XColors.textSecondary)
                 }
+                heading("内容模式").padding(.top, 8)
+                preference("显示受限内容", description: app.familyMode ? "默认隐藏；首次开启需要授权码" : "已开启；可以随时关闭", value: Binding(
+                    get: { !app.familyMode },
+                    set: { enabled in
+                        if !enabled { app.setFamilyMode(true) }
+                        else if app.contentAuthorized { app.setFamilyMode(false) }
+                        else { authorizationCode = ""; authorizationError = nil; showAuthorization = true }
+                    }
+                ))
                 heading("偏好设置").padding(.top, 8)
                 preference("画中画", description: "播放时离开 App 可自动进入系统画中画，也可在播放器中手动开启", value: $pictureInPictureEnabled)
                 preference("启动时自动更新订阅", description: "每次打开 App 拉取一次最新配置", value: Binding(get: { app.settings.autoUpdateOnLaunch }, set: { app.setAutoUpdate($0) }))
@@ -122,13 +149,39 @@ struct SettingsView: View {
         .navigationTitle("订阅与设置")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(showsNavigationBar ? .visible : .hidden, for: .navigationBar)
-        .onAppear { liveURL = app.settings.liveUrl.isEmpty ? DefaultSources.live : app.settings.liveUrl }
+        .onAppear {
+            if showsNavigationBar { app.setSourceSettingsVisible(true) }
+            liveURL = app.settings.liveUrl.isEmpty ? DefaultSources.live : app.settings.liveUrl
+        }
+        .onDisappear { if showsNavigationBar { app.setSourceSettingsVisible(false) } }
         .onChange(of: app.settings.liveUrl) { _, value in liveURL = value }
         .confirmationDialog("这是多仓订阅，请选择一个子仓库导入", isPresented: $showWarehouse, titleVisibility: .visible) {
             ForEach(warehouse) { entry in
                 Button(entry.name) { Task { await submit(entry.url, name: entry.name) } }
             }
             Button("取消", role: .cancel) {}
+        }
+        .sheet(isPresented: $showAuthorization) {
+            NavigationStack {
+                Form {
+                    Section {
+                        SecureField("8 位数字授权码", text: $authorizationCode).keyboardType(.numberPad)
+                        if let authorizationError { Text(authorizationError).foregroundStyle(.red) }
+                    } footer: { Text("授权成功后本机无需再次输入；卸载后需要重新授权。") }
+                }
+                .navigationTitle("输入授权码")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("取消") { showAuthorization = false } }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("确认") {
+                            authorizationError = app.authorizeContent(authorizationCode)
+                            authorizationCode = ""
+                            if authorizationError == nil { showAuthorization = false }
+                        }
+                    }
+                }
+            }.presentationDetents([.medium, .large])
         }
         .alert("清空观看历史？", isPresented: $showClearConfirm) {
             Button("取消", role: .cancel) {}
@@ -144,7 +197,7 @@ struct SettingsView: View {
                 .font(XFont.caption())
             field("备注名称（可留空）", text: $name)
             SettingsFlowLayout(spacing: 8) {
-                pill("单仓 /box", selected: url == DefaultSources.box) { url = DefaultSources.box }
+                pill("影视源 /sources", selected: url == DefaultSources.box) { url = DefaultSources.box }
                 pill("多仓 /dc", selected: url == DefaultSources.warehouse) { url = DefaultSources.warehouse }
                 pill("直播 /live", selected: liveURL == DefaultSources.live) {
                     liveURL = DefaultSources.live

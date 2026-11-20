@@ -7,6 +7,7 @@ struct RootView: View {
     @Environment(AppViewModel.self) private var app
     @Environment(\.openURL) private var openURL
     @Environment(\.formFactor) private var form
+    @Environment(\.scenePhase) private var scenePhase
     @State private var selection = 0
     /// 访问过的 Tab 才真正构建：直播页首次加载要 30~45 秒，
     /// 不能在启动时就把所有页面全建出来。建过之后保活，切回来不重载。
@@ -35,8 +36,10 @@ struct RootView: View {
         .task {
             await app.bootstrapIfNeeded()
         }
+        .onChange(of: scenePhase) { _, phase in app.setForeground(phase == .active) }
         .onChange(of: selection) { _, newValue in
             visited.insert(newValue)
+            app.setSourceSettingsVisible(newValue == 4)
         }
         #if DEBUG
         // 调试用：SIMCTL_CHILD_DEBUG_PLAY_URL=<m3u8> 启动后直接进播放页
@@ -94,6 +97,7 @@ struct RootView: View {
             NavigationStack {
                 content()
             }
+            .id(index == 4 ? "settings" : "\(index)-\(app.familyMode)")
             .opacity(selection == index ? 1 : 0)
             .allowsHitTesting(selection == index)
         }

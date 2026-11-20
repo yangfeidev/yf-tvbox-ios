@@ -40,8 +40,10 @@ struct DetailView: View {
                     ErrorBanner(message: errorText) { self.errorText = nil }
                 }
 
-                header
-                actionRow
+                if !app.familyMode || detail != nil {
+                    header
+                    actionRow
+                }
 
                 if let detail, !detail.content.isEmpty {
                     synopsis(detail.content)
@@ -50,7 +52,7 @@ struct DetailView: View {
                 if !sources.isEmpty {
                     sourcePicker
                     episodeGrid
-                } else if !loading {
+                } else if !loading && detail != nil {
                     EmptyBlock(
                         icon: "link.badge.plus",
                         title: "没有可播放的直链",
@@ -69,7 +71,7 @@ struct DetailView: View {
             .frame(maxWidth: .infinity)
         }
         .background(XColors.background)
-        .navigationTitle(detail?.item.name ?? item.name)
+        .navigationTitle(app.familyMode && detail == nil ? "详情" : (detail?.item.name ?? item.name))
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
         .fullScreenCover(item: $session) { session in
@@ -265,8 +267,14 @@ struct DetailView: View {
         }
         loading = true
         defer { loading = false }
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DEBUG_HOME_HIT_TEST"] == "1" {
+            detail = MediaDetail(item: item, playSources: [PlaySource(name: "测试", episodes: [Episode(name: "测试", url: "http://127.0.0.1/video.m3u8")])])
+            return
+        }
+        #endif
         do {
-            let result = try await VodApi.detail(site: site, vodId: item.id)
+            let result = try await app.familyContent.detail(site: site, id: item.id, family: app.familyMode)
             detail = result
             errorText = nil
             if let resume = findResumeTarget(
@@ -282,7 +290,7 @@ struct DetailView: View {
         } catch {
             guard !Http.isCancellation(error) else { return }
             errorText = (error as? SourceError)?.message ?? error.localizedDescription
-            if detail == nil {
+            if detail == nil && !app.familyMode {
                 detail = MediaDetail(item: item)
             }
         }

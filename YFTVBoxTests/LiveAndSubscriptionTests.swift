@@ -10,6 +10,70 @@ import UIKit
  */
 final class LiveAndSubscriptionTests: XCTestCase {
 
+    func testUnifiedSourcesPreserveKeysAndAvoidCollisions() throws {
+        let previous = SubscriptionDocument(sites: [
+            Site(key: "old", name: "原源", api: "https://example.com/api", type: 1),
+        ])
+        let raw = """
+        {"sites":[{"key":"new","name":"原源","api":"https://example.com/api","type":1},
+                  {"key":"other","name":"其他","api":"https://other.example/api","type":1}]}
+        """
+        var keys: [String: String] = [:]
+        let migrated = try SubscriptionApi.preservingSourceKeys(raw, previous: previous, keys: &keys)
+        XCTAssertEqual(try SubscriptionApi.parse(migrated).sites.map(\.key), ["old", "other"])
+        let again = try SubscriptionApi.preservingSourceKeys(raw, previous: nil, keys: &keys)
+        XCTAssertEqual(try SubscriptionApi.parse(again).sites.map(\.key), ["old", "other"])
+
+        let collision = """
+        {"sites":[{"key":"new","name":"原源","api":"https://example.com/api","type":1},
+                  {"key":"old","name":"其他","api":"https://other.example/api","type":1}]}
+        """
+        let safe = try SubscriptionApi.preservingSourceKeys(collision, previous: previous, keys: &keys)
+        XCTAssertEqual(try SubscriptionApi.parse(safe).sites.map(\.key), ["new", "other"])
+    }
+
+    @MainActor func testFamilyClassificationAndLegacyLibrarySafety() throws {
+        let categories = [Category(typeId: "1", name: "伦理"), Category(typeId: "2", name: "子分类", parentId: "1"), Category(typeId: "3", name: "电影")]
+        XCTAssertEqual(FamilyContent.restrictedIDs(categories), Set(["1", "2"]))
+        XCTAssertFalse(FamilyContent.visible(MediaItem(id: "a", name: "影片", typeId: "2"), categories: categories))
+        XCTAssertFalse(FamilyContent.visible(MediaItem(id: "b", name: "18+内容"), categories: categories))
+        XCTAssertTrue(FamilyContent.visible(MediaItem(id: "c", name: "电影", typeId: "3"), categories: categories))
+        let old = try JSONDecoder().decode(LibraryEntry.self, from: Data("{\"siteKey\":\"s\",\"mediaId\":\"m\",\"name\":\"旧记录\",\"poster\":\"\",\"remarks\":\"\",\"episodeName\":\"\",\"sourceName\":\"\",\"progress\":0,\"updatedAt\":0}".utf8))
+        XCTAssertFalse(FamilyContent().libraryVisible(old, site: nil))
+    }
+
+    func testContentAuthorizationAndLockout() throws {
+        let suite = "test.authorization.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: base) }
+        let store = LocalStore(defaults: defaults, baseDirectory: base)
+        let now = Date(timeIntervalSince1970: 1000)
+        XCTAssertTrue(store.familyMode)
+        for _ in 0..<5 { XCTAssertNotNil(store.authorizeContent("00000000", now: now)) }
+        XCTAssertNotNil(store.authorizeContent("08160219", now: now.addingTimeInterval(29)))
+        XCTAssertFalse(store.contentAuthorized)
+        XCTAssertNil(store.authorizeContent("08160219", now: now.addingTimeInterval(31)))
+        XCTAssertTrue(store.contentAuthorized)
+        store.familyMode = false
+        XCTAssertFalse(store.familyMode)
+        try FileManager.default.removeItem(at: base.appendingPathComponent("feigemedia/authorization/authorized"))
+        XCTAssertTrue(store.familyMode)
+    }
+
+    func testSourceCheckRequiresTwoFailuresAndExpires() {
+        let now = Date(timeIntervalSince1970: 1000)
+        let success = SourceCheckSnapshot.merging(["a": true], previous: nil, network: "n", now: now)
+        let first = SourceCheckSnapshot.merging(["a": false], previous: success, network: "n", now: now)
+        XCTAssertEqual(first.entries["a"], SourceCheckEntry(available: true, failures: 1))
+        let second = SourceCheckSnapshot.merging(["a": false], previous: first, network: "n", now: now)
+        XCTAssertEqual(second.entries["a"], SourceCheckEntry(available: false, failures: 2))
+        let changed = SourceCheckSnapshot.merging(["a": false], previous: success, network: "other", now: now)
+        XCTAssertEqual(changed.entries["a"], SourceCheckEntry(available: false, failures: 1))
+        XCTAssertTrue(success.isFresh(now: now.addingTimeInterval(1799)))
+        XCTAssertFalse(success.isFresh(now: now.addingTimeInterval(1800)))
+    }
+
     // MARK: - M3U
 
     func testM3UParsesAttributesAndHeaders() {

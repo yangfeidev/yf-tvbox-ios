@@ -35,15 +35,15 @@ enum VodApi {
 
     // MARK: - 列表
 
-    static func list(site: Site, typeId: String = "", page: Int = 1) async throws -> PagedMedia {
+    static func list(site: Site, typeId: String = "", page: Int = 1, timeout: TimeInterval = 15) async throws -> PagedMedia {
         if site.type == 4 {
             let params: [String: String] = typeId.isEmpty
                 ? ["filter": "true", "extend": site.ext]
                 : ["ac": "detail", "filter": "true", "t": typeId, "pg": String(page), "ext": ""]
-            let body = try await Http.get(try buildURL(site.api, params))
+            let body = try await Http.get(try buildURL(site.api, params), timeoutSeconds: timeout, readTimeoutSeconds: timeout)
             let result = normalizeImages(site, try VodParser.parseList(body, isJSON: true))
             if typeId.isEmpty, result.items.isEmpty, let first = result.categories.first {
-                let fallback = try await list(site: site, typeId: first.typeId, page: 1)
+                let fallback = try await list(site: site, typeId: first.typeId, page: 1, timeout: timeout)
                 var merged = fallback
                 merged.categories = result.categories
                 return merged
@@ -54,7 +54,7 @@ enum VodApi {
         params["ac"] = site.isJSONAPI ? "detail" : "videolist"
         params["pg"] = String(page)
         if !typeId.isEmpty { params["t"] = typeId }
-        let body = try await Http.get(try buildURL(site.api, params))
+        let body = try await Http.get(try buildURL(site.api, params), timeoutSeconds: timeout, readTimeoutSeconds: timeout)
         return normalizeImages(site, try VodParser.parseList(body, isJSON: site.isJSONAPI))
     }
 
@@ -232,5 +232,102 @@ enum VodApi {
         var copy = page
         copy.items = page.items.map { normalizeImage(site, $0) }
         return copy
+    }
+}
+
+
+/// Content classification is scoped to the entire source configuration, not category IDs alone.
+@MainActor
+final class FamilyContent {
+    private var cache: [Site: [Category]] = [:]
+    private static let terms = ["伦理", "倫理", "情色", "色情", "成人", "限制级", "限制級", "三级片", "三級片", "福利片", "18+"]
+
+    static func restricted(_ text: String) -> Bool {
+        terms.contains { text.localizedCaseInsensitiveContains($0) }
+    }
+
+    static func restrictedIDs(_ categories: [Category]) -> Set<String> {
+        var ids = Set(categories.filter { restricted($0.name) }.map(\.typeId))
+        var changed = true
+        while changed {
+            changed = false
+            for category in categories where ids.contains(category.parentId) {
+                if ids.insert(category.typeId).inserted { changed = true }
+            }
+        }
+        return ids
+    }
+
+    static func visible(_ item: MediaItem, categories: [Category]) -> Bool {
+        !restricted(item.name) && !restricted(item.remarks) && !restricted(item.categoryName)
+            && !restrictedIDs(categories).contains(item.typeId)
+    }
+
+    func rawCategories(_ site: Site) async throws -> [Category] {
+        if let cached = cache[site] { return cached }
+        let categories = try await VodApi.categories(site: site)
+        cache[site] = categories
+        return categories
+    }
+
+    func categories(site: Site, family: Bool) async throws -> [Category] {
+        let categories = try await VodApi.categories(site: site)
+        cache[site] = categories
+        let blocked = family ? Self.restrictedIDs(categories) : []
+        return categories.filter { !blocked.contains($0.typeId) }
+    }
+
+    func filter(_ page: PagedMedia, site: Site, family: Bool) async -> PagedMedia {
+        guard family else { return page }
+        let categories = (try? await rawCategories(site)) ?? page.categories
+        let blocked = Self.restrictedIDs(categories)
+        var result = page
+        result.items = page.items.filter { Self.visible($0, categories: categories) }
+        result.categories = page.categories.filter { !blocked.contains($0.typeId) && !Self.restricted($0.name) }
+        return result
+    }
+
+    func list(site: Site, typeId: String = "", page: Int = 1, family: Bool) async throws -> PagedMedia {
+        var result = await filter(try await VodApi.list(site: site, typeId: typeId, page: page), site: site, family: family)
+        if family && site.type == 4 && typeId.isEmpty && result.items.isEmpty {
+            for category in result.categories.prefix(4) {
+                let candidate = await filter(try await VodApi.list(site: site, typeId: category.typeId), site: site, family: true)
+                if !candidate.items.isEmpty {
+                    let categories = result.categories
+                    result = candidate
+                    result.categories = categories
+                    break
+                }
+            }
+        }
+        return result
+    }
+
+    func listChildren(site: Site, parentId: String, categories: [Category], page: Int, family: Bool) async throws -> PagedMedia {
+        await filter(try await VodApi.listChildren(site: site, parentId: parentId, categories: categories, page: page), site: site, family: family)
+    }
+
+    func search(site: Site, keyword: String, family: Bool) async throws -> PagedMedia {
+        await filter(try await VodApi.search(site: site, keyword: keyword), site: site, family: family)
+    }
+
+    func detail(site: Site, id: String, family: Bool) async throws -> MediaDetail {
+        let detail = try await VodApi.detail(site: site, vodId: id)
+        if family {
+            let categories = (try? await rawCategories(site)) ?? []
+            if !Self.visible(detail.item, categories: categories) {
+                throw SourceError("家庭模式下无法查看此内容")
+            }
+        }
+        return detail
+    }
+
+    func libraryVisible(_ entry: LibraryEntry, site: Site?) -> Bool {
+        let item = entry.toMediaItem()
+        guard !Self.restricted(entry.remarks), !Self.restricted(entry.episodeName) else { return false }
+        guard !item.typeId.isEmpty || !item.categoryName.isEmpty else { return false }
+        let categories = site.flatMap { cache[$0] } ?? []
+        if !item.typeId.isEmpty && !categories.contains(where: { $0.typeId == item.typeId }) { return false }
+        return Self.visible(item, categories: categories)
     }
 }

@@ -202,6 +202,8 @@ struct LibraryEntry: Identifiable, Hashable, Codable {
     var name: String
     var poster: String = ""
     var remarks: String = ""
+    var typeId: String? = nil
+    var categoryName: String? = nil
     var episodeName: String = ""
     var sourceName: String = ""
     var progress: Float = 0
@@ -215,7 +217,8 @@ struct LibraryEntry: Identifiable, Hashable, Codable {
             id: mediaId,
             name: name,
             poster: poster,
-            remarks: episodeName.isEmpty ? remarks : episodeName
+            remarks: episodeName.isEmpty ? remarks : episodeName,
+            typeId: typeId ?? "", categoryName: categoryName ?? ""
         )
     }
 }
@@ -275,5 +278,35 @@ struct AppSettings: Codable {
         currentSiteKey = try container.decodeIfPresent(String.self, forKey: .currentSiteKey) ?? ""
         liveUrl = try container.decodeIfPresent(String.self, forKey: .liveUrl) ?? ""
         autoAddDefault = try container.decodeIfPresent(Bool.self, forKey: .autoAddDefault) ?? true
+    }
+}
+
+
+struct SourceCheckEntry: Codable, Equatable {
+    var available: Bool
+    var failures: Int = 0
+}
+
+struct SourceCheckSnapshot: Codable {
+    var network: String
+    var checkedAt: Date
+    var entries: [String: SourceCheckEntry]
+
+    func isFresh(now: Date = Date()) -> Bool {
+        let age = now.timeIntervalSince(checkedAt)
+        return age >= 0 && age < 30 * 60
+    }
+
+    static func merging(_ results: [String: Bool], previous: SourceCheckSnapshot?, network: String, now: Date = Date()) -> SourceCheckSnapshot {
+        var entries: [String: SourceCheckEntry] = [:]
+        for (id, success) in results {
+            let old = previous?.network == network ? previous?.entries[id] : nil
+            if success { entries[id] = SourceCheckEntry(available: true) }
+            else {
+                let failures = min((old?.failures ?? 0) + 1, 2)
+                entries[id] = SourceCheckEntry(available: old?.available == true && failures < 2, failures: failures)
+            }
+        }
+        return SourceCheckSnapshot(network: network, checkedAt: now, entries: entries)
     }
 }

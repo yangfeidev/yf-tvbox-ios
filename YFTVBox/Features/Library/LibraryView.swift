@@ -22,8 +22,8 @@ struct LibraryView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                libraryTab("收藏 \(app.favorites.count)", index: 0)
-                libraryTab("历史 \(app.history.count)", index: 1)
+                libraryTab("收藏 \(app.visibleFavorites.count)", index: 0)
+                libraryTab("历史 \(app.visibleHistory.count)", index: 1)
                 Spacer()
             }
             .padding(.horizontal, form.horizontalPadding)
@@ -61,11 +61,11 @@ struct LibraryView: View {
 
     private var favoritesGrid: some View {
         Group {
-            if app.favorites.isEmpty {
+            if app.visibleFavorites.isEmpty {
                 EmptyBlock(icon: "heart", title: "还没有收藏", message: "在详情页点右上角的心形即可收藏")
             } else {
                 LazyVGrid(columns: columns, spacing: form.spacing) {
-                    ForEach(app.favorites) { entry in
+                    ForEach(app.visibleFavorites) { entry in
                         Button {
                             open(entry)
                         } label: {
@@ -89,11 +89,11 @@ struct LibraryView: View {
 
     private var historyList: some View {
         Group {
-            if app.history.isEmpty {
+            if app.visibleHistory.isEmpty {
                 EmptyBlock(icon: "clock", title: "还没有观看记录")
             } else {
                 LazyVGrid(columns: columns, spacing: form.spacing) {
-                    ForEach(app.history) { entry in
+                    ForEach(app.visibleHistory) { entry in
                         VStack(spacing: 6) {
                             Button { open(entry) } label: {
                                 VStack(alignment: .leading, spacing: 4) {

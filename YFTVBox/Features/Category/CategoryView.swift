@@ -69,9 +69,9 @@ struct CategoryView: View {
         defer { loading = false }
 
         do {
-            var result = try await VodApi.list(site: site, typeId: category?.typeId ?? "", page: target)
+            var result = try await app.familyContent.list(site: site, typeId: category?.typeId ?? "", page: target, family: app.familyMode)
             if let category, categories.contains(where: { $0.parentId == category.typeId }) {
-                let children = try await VodApi.listChildren(site: site, parentId: category.typeId, categories: categories, page: target)
+                let children = try await app.familyContent.listChildren(site: site, parentId: category.typeId, categories: categories, page: target, family: app.familyMode)
                 let existing = Set(result.items.map(\.id))
                 result.items += children.items.filter { !existing.contains($0.id) }
                 result.pageCount = max(result.pageCount, children.pageCount)
@@ -148,7 +148,7 @@ struct CategoryBrowserView: View {
         .task(id: "\(app.currentSite?.api ?? "")-\(reload)") {
             guard let site = app.currentSite else { categories = []; selection = ""; return }
             do {
-                let loaded = try await VodApi.categories(site: site)
+                let loaded = try await app.familyContent.categories(site: site, family: app.familyMode)
                 guard !Task.isCancelled else { return }
                 var ids = Set<String>()
                 categories = loaded.filter { !$0.typeId.isEmpty && ids.insert($0.typeId).inserted }

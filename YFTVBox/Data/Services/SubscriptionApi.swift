@@ -24,8 +24,10 @@ enum SubscriptionApi {
     }
 
     static func fetchRaw(_ url: String) async throws -> String {
-        try await Http.get(
-            normalizeURL(url),
+        let normalized = normalizeURL(url)
+        let requestURL = normalized == DefaultSources.box ? normalized + "?include_candidates=1" : normalized
+        return try await Http.get(
+            requestURL,
             timeoutSeconds: timeoutSeconds,
             readTimeoutSeconds: timeoutSeconds
         )
@@ -117,6 +119,38 @@ enum SubscriptionApi {
         }
 
         return SubscriptionDocument(sites: sites, liveSources: liveSources, parses: parses)
+    }
+
+    /// Keep stable source keys when the unified list changes its server-generated keys.
+    static func preservingSourceKeys(_ raw: String, previous: SubscriptionDocument?, keys: inout [String: String]) throws -> String {
+        guard let data = raw.data(using: .utf8),
+              var root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var nodes = root["sites"] as? [[String: Any]] else { return raw }
+        func identity(_ site: Site) -> String {
+            let data = try! JSONSerialization.data(withJSONObject: [site.type, site.api, site.ext])
+            return String(decoding: data, as: UTF8.self)
+        }
+        let old = previous?.sites ?? []
+        let counts = Dictionary(grouping: old, by: \.key).mapValues(\.count)
+        for site in old where counts[site.key] == 1 && !site.key.isEmpty {
+            if keys[identity(site)] == nil { keys[identity(site)] = site.key }
+        }
+        let parsed = try parse(raw).sites
+        var occupied = Set(parsed.map(\.key))
+        for index in nodes.indices {
+            let original = VodParser.str(nodes[index], "key").isEmpty ? VodParser.str(nodes[index], "name") : VodParser.str(nodes[index], "key")
+            guard let site = parsed.first(where: { $0.key == original }) else { continue }
+            let id = identity(site)
+            if let oldKey = keys[id], oldKey == original || !occupied.contains(oldKey) {
+                occupied.remove(original)
+                occupied.insert(oldKey)
+                nodes[index]["key"] = oldKey
+            } else {
+                keys[id] = original
+            }
+        }
+        root["sites"] = nodes
+        return String(decoding: try JSONSerialization.data(withJSONObject: root), as: UTF8.self)
     }
 
     private static func intValue(_ raw: Any?, default fallback: Int) -> Int {

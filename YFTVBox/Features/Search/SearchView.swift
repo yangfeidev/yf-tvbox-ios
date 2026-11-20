@@ -168,7 +168,7 @@ struct SearchView: View {
         defer { if generation == searchGeneration { loading = false } }
 
         do {
-            let page = try await VodApi.search(site: site, keyword: keyword)
+            let page = try await app.familyContent.search(site: site, keyword: keyword, family: app.familyMode)
             guard generation == searchGeneration else { return }
             results = page.items
             app.recordSearch(keyword)
